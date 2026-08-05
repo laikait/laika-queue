@@ -20,7 +20,7 @@
         "ext-posix": "Required alongside pcntl for signal handling (Linux/macOS only)"
     },
     "autoload": {
-        "file":[
+        "files": [
             "helpers/loader.php"
         ],
         "psr-4": {
