@@ -4,48 +4,49 @@ namespace Laika\Queue\Driver;
 
 use Laika\Queue\Interfaces\QueueDriverInterface;
 use Laika\Queue\Abstracts\Job;
-use PDO;
+use Laika\Queue\Model\QueueModel;
 
+/**
+ * Queue driver backed by laika-model (see laikait/laika-model) via QueueModel.
+ * Register the connection with Laika\Model\Connection::add(...) before
+ * constructing this — the driver only refers to it by name, it never opens
+ * PDO itself.
+ *
+ * The table isn't created here — run `php laika app:migrate` (which
+ * discovers Laika\Queue\Schema\QueueModelSchema via helpers/loader.php), or
+ * call Schema::on($connection)->createIfNotExists(...) yourself before use.
+ *
+ * pop() claims a row with a plain SELECT + UPDATE inside a transaction, no
+ * locking clause (no FOR UPDATE / SKIP LOCKED) — this keeps it driver-agnostic
+ * across everything laika-model supports, but it means two workers popping
+ * concurrently can both read the same unreserved row before either commits
+ * its UPDATE, and both end up processing the same job. If that matters for
+ * your workload, either run a single worker process per queue, or add a
+ * locking clause back in for your specific database driver.
+ */
 class DatabaseDriver implements QueueDriverInterface
 {
-    protected PDO $pdo;
-    protected string $table;
+    protected QueueModel $model;
+    protected string $connection;
 
-    public function __construct(PDO $pdo, string $table = 'laika_queue_jobs')
+    public function __construct(string $connection = 'default')
     {
-        $this->pdo = $pdo;
-        $this->table = $table;
-        $this->ensureTable();
-    }
-
-    protected function ensureTable(): void
-    {
-        $this->pdo->exec("CREATE TABLE IF NOT EXISTS {$this->table} (
-            id CHAR(36) PRIMARY KEY,
-            queue VARCHAR(100) NOT NULL,
-            payload LONGTEXT NOT NULL,
-            attempts INT UNSIGNED NOT NULL DEFAULT 0,
-            reserved_at INT UNSIGNED NULL,
-            available_at INT UNSIGNED NOT NULL,
-            created_at INT UNSIGNED NOT NULL,
-            INDEX idx_queue_avail (queue, reserved_at, available_at)
-        )");
+        $this->connection = $connection;
+        $this->model = new QueueModel($connection);
     }
 
     public function push(Job $job, string $queue = 'default', int $delay = 0): string
     {
         $job->id = $job->id ?: bin2hex(random_bytes(16));
         $job->queue = $queue;
-
-        $stmt = $this->pdo->prepare("INSERT INTO {$this->table}
-            (id, queue, payload, attempts, reserved_at, available_at, created_at)
-            VALUES (:id, :queue, :payload, 0, NULL, :available_at, :created_at)");
-
         $now = time();
-        $stmt->execute([
+
+        $this->model->insert([
             'id' => $job->id,
             'queue' => $queue,
             'payload' => $job->serializePayload(),
+            'attempts' => 0,
+            'reserved_at' => null,
             'available_at' => $now + $delay,
             'created_at' => $now,
         ]);
@@ -55,31 +56,33 @@ class DatabaseDriver implements QueueDriverInterface
 
     public function pop(string $queue = 'default'): ?Job
     {
-        $this->pdo->beginTransaction();
+        return $this->model->transaction(function (QueueModel $model) use ($queue) {
+            $now = time();
 
-        $stmt = $this->pdo->prepare("SELECT * FROM {$this->table}
-            WHERE queue = :queue AND reserved_at IS NULL AND available_at <= :now
-            ORDER BY available_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED");
-        $stmt->execute(['queue' => $queue, 'now' => time()]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $rows = $model
+                ->where(['queue' => $queue])
+                ->isNull('reserved_at')
+                ->where(['available_at' => $now], '<=')
+                ->order('available_at', 'ASC')
+                ->limit(1)
+                ->get();
 
-        if (!$row) {
-            $this->pdo->commit();
-            return null;
-        }
+            if (!$rows) {
+                return null;
+            }
 
-        $upd = $this->pdo->prepare("UPDATE {$this->table}
-            SET reserved_at = :now, attempts = attempts + 1 WHERE id = :id");
-        $upd->execute(['now' => time(), 'id' => $row['id']]);
+            $row = $rows[0];
 
-        $this->pdo->commit();
+            $model->where(['id' => $row['id']])->update(['reserved_at' => $now]);
+            $model->where(['id' => $row['id']])->increment('attempts');
 
-        $job = Job::unserializePayload($row['payload']);
-        $job->id = $row['id'];
-        $job->queue = $row['queue'];
-        $job->tries = (int) $row['attempts'] + 1;
+            $job = Job::unserializePayload($row['payload']);
+            $job->id = $row['id'];
+            $job->queue = $row['queue'];
+            $job->tries = (int) $row['attempts'] + 1;
 
-        return $job;
+            return $job;
+        });
     }
 
     public function ack(string $id, string $queue = 'default'): void
@@ -89,26 +92,28 @@ class DatabaseDriver implements QueueDriverInterface
 
     public function release(string $id, string $queue = 'default', int $delay = 0): void
     {
-        $stmt = $this->pdo->prepare("UPDATE {$this->table}
-            SET reserved_at = NULL, available_at = :available_at
-            WHERE id = :id AND queue = :queue");
-        $stmt->execute([
-            'available_at' => time() + $delay,
-            'id' => $id,
-            'queue' => $queue,
-        ]);
+        $this->model
+            ->where(['id' => $id])
+            ->where(['queue' => $queue])
+            ->update([
+                'reserved_at' => null,
+                'available_at' => time() + $delay,
+            ]);
     }
 
     public function delete(string $id, string $queue = 'default'): void
     {
-        $stmt = $this->pdo->prepare("DELETE FROM {$this->table} WHERE id = :id AND queue = :queue");
-        $stmt->execute(['id' => $id, 'queue' => $queue]);
+        $this->model
+            ->where(['id' => $id])
+            ->where(['queue' => $queue])
+            ->delete();
     }
 
     public function size(string $queue = 'default'): int
     {
-        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM {$this->table} WHERE queue = :queue AND reserved_at IS NULL");
-        $stmt->execute(['queue' => $queue]);
-        return (int) $stmt->fetchColumn();
+        return $this->model
+            ->where(['queue' => $queue])
+            ->isNull('reserved_at')
+            ->count();
     }
 }

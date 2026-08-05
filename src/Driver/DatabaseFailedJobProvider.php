@@ -3,41 +3,33 @@
 namespace Laika\Queue\Driver;
 
 use Laika\Queue\Interfaces\FailedJobProviderInterface;
-use PDO;
+use Laika\Queue\Model\FailedJobModel;
 
+/**
+ * Failed-job log backed by laika-model (see laikait/laika-model) via
+ * FailedJobModel. Register the connection with Laika\Model\Connection::add(...)
+ * before constructing this.
+ *
+ * The table isn't created here — run `php laika app:migrate` (which
+ * discovers Laika\Queue\Schema\FailedJobModelSchema via helpers/loader.php),
+ * or call Schema::on($connection)->createIfNotExists(...) yourself before use.
+ */
 class DatabaseFailedJobProvider implements FailedJobProviderInterface
 {
-    protected PDO $pdo;
-    protected string $table;
+    protected FailedJobModel $model;
+    protected string $connection;
 
-    public function __construct(PDO $pdo, string $table = 'laika_failed_jobs')
+    public function __construct(string $connection = 'default')
     {
-        $this->pdo = $pdo;
-        $this->table = $table;
-        $this->ensureTable();
-    }
-
-    protected function ensureTable(): void
-    {
-        $this->pdo->exec("CREATE TABLE IF NOT EXISTS {$this->table} (
-            id CHAR(36) PRIMARY KEY,
-            queue VARCHAR(100) NOT NULL,
-            payload LONGTEXT NOT NULL,
-            exception TEXT NOT NULL,
-            failed_at INT UNSIGNED NOT NULL,
-            INDEX idx_queue (queue)
-        )");
+        $this->connection = $connection;
+        $this->model = (new FailedJobModel($connection));
     }
 
     public function log(string $queue, string $payload, \Throwable $e): string
     {
         $id = bin2hex(random_bytes(16));
 
-        $stmt = $this->pdo->prepare("INSERT INTO {$this->table}
-            (id, queue, payload, exception, failed_at)
-            VALUES (:id, :queue, :payload, :exception, :failed_at)");
-
-        $stmt->execute([
+        $this->model->insert([
             'id' => $id,
             'queue' => $queue,
             'payload' => $payload,
@@ -50,38 +42,35 @@ class DatabaseFailedJobProvider implements FailedJobProviderInterface
 
     public function all(?string $queue = null): array
     {
+        $query = $this->model->order('failed_at', 'DESC');
+
         if ($queue) {
-            $stmt = $this->pdo->prepare("SELECT * FROM {$this->table} WHERE queue = :queue ORDER BY failed_at DESC");
-            $stmt->execute(['queue' => $queue]);
-        } else {
-            $stmt = $this->pdo->query("SELECT * FROM {$this->table} ORDER BY failed_at DESC");
+            $query = $query->where(['queue' => $queue]);
         }
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $query->get();
     }
 
     public function find(string $id): ?array
     {
-        $stmt = $this->pdo->prepare("SELECT * FROM {$this->table} WHERE id = :id");
-        $stmt->execute(['id' => $id]);
-        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        $row = $this->model->where(['id' => $id])->first();
+        return $row ?: null;
     }
 
     public function forget(string $id): bool
     {
-        $stmt = $this->pdo->prepare("DELETE FROM {$this->table} WHERE id = :id");
-        $stmt->execute(['id' => $id]);
-        return $stmt->rowCount() > 0;
+        return $this->model->where(['id' => $id])->delete() > 0;
     }
 
     public function flush(?int $hours = null): void
     {
         if ($hours === null) {
-            $this->pdo->exec("TRUNCATE TABLE {$this->table}");
+            $this->model->notNull('id')->delete();
             return;
         }
 
-        $stmt = $this->pdo->prepare("DELETE FROM {$this->table} WHERE failed_at <= :cutoff");
-        $stmt->execute(['cutoff' => time() - ($hours * 3600)]);
+        $this->model
+            ->where(['failed_at' => time() - ($hours * 3600)], '<=')
+            ->delete();
     }
 }

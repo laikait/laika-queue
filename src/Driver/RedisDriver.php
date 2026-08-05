@@ -3,13 +3,17 @@
 namespace Laika\Queue\Driver;
 
 use Laika\Queue\Interfaces\QueueDriverInterface;
+use Laika\Queue\Interfaces\ReconnectableDriver;
 use Laika\Queue\Abstracts\Job;
 use Redis;
 
-class RedisDriver implements QueueDriverInterface
+class RedisDriver implements QueueDriverInterface, ReconnectableDriver
 {
     protected Redis $redis;
     protected string $prefix;
+
+    /** Set when constructed via fromConfig(); lets reconnect() open a fresh connection post-fork. */
+    protected ?\Closure $connector = null;
 
     protected const POP_SCRIPT = <<<'LUA'
         local id = redis.call('LPOP', KEYS[1])
@@ -36,6 +40,43 @@ class RedisDriver implements QueueDriverInterface
     {
         $this->redis = $redis;
         $this->prefix = $prefix;
+    }
+
+    /**
+     * Build a driver that can reconnect() with a brand-new connection — use
+     * this instead of the plain constructor when the driver will be used
+     * inside a Worker that forks (reconnect() is called in the forked child
+     * so it doesn't share the parent's socket).
+     */
+    public static function fromConfig(array $config, string $prefix = 'laika_queue'): self
+    {
+        $connector = static function () use ($config): Redis {
+            $redis = new Redis();
+            $redis->connect(
+                $config['host'] ?? '127.0.0.1',
+                $config['port'] ?? 6379,
+                $config['timeout'] ?? 0.0
+            );
+            if (!empty($config['auth'])) {
+                $redis->auth($config['auth']);
+            }
+            if (isset($config['database'])) {
+                $redis->select($config['database']);
+            }
+            return $redis;
+        };
+
+        $driver = new self($connector(), $prefix);
+        $driver->connector = $connector;
+
+        return $driver;
+    }
+
+    public function reconnect(): void
+    {
+        if ($this->connector) {
+            $this->redis = ($this->connector)();
+        }
     }
 
     protected function pendingKey(string $queue): string
@@ -138,6 +179,10 @@ class RedisDriver implements QueueDriverInterface
 
     public function size(string $queue = 'default'): int
     {
-        return $this->redis->lLen($this->pendingKey($queue));
+        // Matches DatabaseDriver/JsonDriver semantics: every unreserved job,
+        // including ones delayed into the future — not just immediately
+        // available ones.
+        return $this->redis->lLen($this->pendingKey($queue))
+            + $this->redis->zCard($this->delayedKey($queue));
     }
 }

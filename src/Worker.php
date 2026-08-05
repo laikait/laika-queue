@@ -4,6 +4,7 @@ namespace Laika\Queue;
 
 use Laika\Queue\Interfaces\QueueDriverInterface;
 use Laika\Queue\Interfaces\FailedJobProviderInterface;
+use Laika\Queue\Interfaces\ReconnectableDriver;
 use Laika\Queue\Abstracts\Job;
 
 class Worker
@@ -41,7 +42,14 @@ class Worker
                 continue;
             }
 
-            $job = $this->driver->pop($queue);
+            try {
+                $job = $this->driver->pop($queue);
+            } catch (\Throwable $e) {
+                fwrite(STDERR, "[laika-queue] driver->pop() failed: {$e->getMessage()}\n");
+                sleep($sleep);
+                $this->stopIfMemoryExceeded($memoryLimit);
+                continue;
+            }
 
             if (!$job) {
                 sleep($sleep);
@@ -64,6 +72,12 @@ class Worker
         $pid = pcntl_fork();
 
         if ($pid === 0) {
+            if ($this->driver instanceof ReconnectableDriver) {
+                $this->driver->reconnect();
+            }
+            if ($this->failer instanceof ReconnectableDriver) {
+                $this->failer->reconnect();
+            }
             $this->process($job, $queue);
             exit(0);
         }
@@ -77,11 +91,24 @@ class Worker
             if (time() - $start >= $timeout) {
                 posix_kill($pid, SIGKILL);
                 pcntl_waitpid($pid, $status);
-                $this->driver->release($job->id, $queue, $job->backoff());
+                $this->handleTimeout($job, $queue);
                 break;
             }
             usleep(100000);
         }
+    }
+
+    protected function handleTimeout(Job $job, string $queue): void
+    {
+        if ($job->tries >= $job->maxTries) {
+            $this->failer?->log($queue, $job->serializePayload(), new \RuntimeException(
+                "Job '{$job->id}' timed out and exhausted its {$job->maxTries} tries."
+            ));
+            $this->driver->delete($job->id, $queue);
+            return;
+        }
+
+        $this->driver->release($job->id, $queue, $job->backoff());
     }
 
     protected function process(Job $job, string $queue): void

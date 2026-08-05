@@ -10,25 +10,36 @@
             "email": "riyadhtayf@gmail.com"
         }
     ],
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/laikait/laika-model"
+        }
+    ],
     "require": {
         "php": "^8.1",
-        "ext-pdo": "*"
+        "ext-pdo": "*",
+        "laikait/laika-model": "dev-main"
     },
     "suggest": {
         "ext-redis": "Required to use RedisDriver",
         "ext-pcntl": "Enables graceful shutdown and per-job timeout in Worker (Linux/macOS only)",
-        "ext-posix": "Required alongside pcntl for signal handling (Linux/macOS only)"
+        "ext-posix": "Required alongside pcntl for signal handling (Linux/macOS only)",
+        "laikait/laika-core": "Makes QueueModelSchema/FailedJobModelSchema discoverable by `php laika app:migrate` — not needed to use DatabaseDriver standalone"
     },
     "autoload": {
-        "file":[
+        "files": [
             "helpers/loader.php"
         ],
         "psr-4": {
-            "Laika\\Queue\\": "src/"
+            "Laika\\Queue\\": "src/",
+            "Laika\\Queue\\Model\\": "src/Models/",
+            "Laika\\Queue\\Schema\\": "src/Schema/"
         }
     },
     "bin": [
         "bin/laika-worker"
     ],
-    "minimum-stability": "stable"
+    "minimum-stability": "dev",
+    "prefer-stable": true
 }

@@ -15,11 +15,27 @@ abstract class Job
     protected int|array|null $backoffStrategy = null;
     protected bool $jitter = true;
 
+    /**
+     * Class names unserializePayload() is permitted to instantiate. Empty by
+     * default, which means unserialize() rejects every object (safe default)
+     * rather than allowing arbitrary classes — the classic PHP Object
+     * Injection gadget-chain vector. Register your own Job subclasses once at
+     * bootstrap:
+     *
+     *   Job::registerTrustedClasses([SendWelcomeEmail::class, ...]);
+     */
+    protected static array $trustedClasses = [];
+
     abstract public function handle(): void;
 
     public function failed(\Throwable $e): void
     {
         // override for custom failure logic
+    }
+
+    public static function registerTrustedClasses(array $classes): void
+    {
+        self::$trustedClasses = array_values(array_unique([...self::$trustedClasses, ...$classes]));
     }
 
     public function backoff(): int
@@ -35,8 +51,12 @@ abstract class Job
 
     protected function backoffFromArray(array $steps): int
     {
+        if ($steps === []) {
+            return $this->exponentialBackoff();
+        }
+
         $index = min(max(0, $this->tries - 1), count($steps) - 1);
-        return $steps[$index] ?? end($steps);
+        return $steps[$index];
     }
 
     protected function exponentialBackoff(int $cap = 3600): int
@@ -58,6 +78,15 @@ abstract class Job
 
     public static function unserializePayload(string $payload): self
     {
-        return unserialize($payload);
+        $job = unserialize($payload, ['allowed_classes' => self::$trustedClasses]);
+
+        if (!$job instanceof self) {
+            throw new \RuntimeException(
+                'Failed to unserialize job payload: its class is not registered as trusted. ' .
+                'Call Job::registerTrustedClasses() with your Job subclasses at bootstrap.'
+            );
+        }
+
+        return $job;
     }
 }
