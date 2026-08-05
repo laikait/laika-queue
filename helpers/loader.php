@@ -7,6 +7,6 @@ use Laika\Core\App\Resource;
 // any app that hasn't installed the Laika core yet). Only register with the
 // framework's resource loader when it's actually present.
 if (class_exists(Resource::class)) {
-    Resource::register('models', __DIR__ . '/../src/Models', 'Laika\\Queue\\Model');
+    Resource::register('models', __DIR__ . '/../src/Model', 'Laika\\Queue\\Model');
     Resource::register('schemas', __DIR__ . '/../src/Schema', 'Laika\\Queue\\Schema');
 }

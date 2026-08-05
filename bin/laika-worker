@@ -1,13 +1,30 @@
 #!/usr/bin/env php
 <?php
 
-require __DIR__ . '/../vendor/autoload.php';
-
 use Laika\Queue\Worker;
 use Laika\Queue\Abstracts\Job;
 use Laika\Queue\Driver\DatabaseDriver;
 use Laika\Queue\Driver\DatabaseFailedJobProvider;
 use Laika\Model\Connection;
+
+// Where the app's autoloader sits on disk differs by context:
+//   - run via Composer's generated vendor/bin/laika-worker proxy: it already
+//     tells us the exact path (also correct if the app customizes its
+//     vendor-dir), no guessing needed.
+//   - standalone (this repo cloned directly), invoked as bin/laika-worker:
+//     <root>/vendor/autoload.php
+//   - installed as a dependency, invoked directly (bypassing the proxy) as
+//     vendor/laikait/laika-queue/bin/laika-worker: the app's autoloader is
+//     3 levels up at <app>/vendor/autoload.php
+$autoloadCandidates = [__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'];
+$autoload = $GLOBALS['_composer_autoload_path'] ?? current(array_filter($autoloadCandidates, 'is_file'));
+
+if (!$autoload || !is_file($autoload)) {
+    fwrite(STDERR, "[laika-queue] could not locate vendor/autoload.php (looked in: " . implode(', ', $autoloadCandidates) . ")\n");
+    exit(1);
+}
+
+require $autoload;
 
 $queue = $argv[1] ?? 'default';
 
