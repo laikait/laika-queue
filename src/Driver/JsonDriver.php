@@ -5,27 +5,36 @@ namespace Laika\Queue\Driver;
 use Laika\Queue\Interfaces\QueueDriverInterface;
 use Laika\Queue\Abstracts\Job;
 
+/**
+ * Flat-file queue driver — good for local/dev, no external service needed.
+ * Every queue shares a single lf-storage/queues/jobs.json file (one JSON
+ * array of job records, each tagged with its 'queue'), guarded by flock()
+ * so concurrent push()/pop() calls don't corrupt it. Same locking-clause
+ * caveat as DatabaseDriver applies — see README — this isn't safe against
+ * multiple worker processes racing on the same queue without idempotent
+ * jobs.
+ */
 class JsonDriver implements QueueDriverInterface
 {
-    protected string $dir;
+    protected string $file;
 
-    public function __construct(string $dir)
+    public function __construct()
     {
-        $this->dir = rtrim($dir, '/');
-        if (!is_dir($this->dir)) {
-            mkdir($this->dir, 0775, true);
+        $this->file = APP_PATH . '/lf-storage/queues/jobs.json';
+
+        $dir = dirname($this->file);
+        if (!is_dir($dir)) {
+            mkdir($dir, recursive:true);
+            setPermission($dir, 0775);
+        }
+        if (!is_file($this->file)) {
+            file_put_contents($this->file, json_encode([]));
         }
     }
 
-    protected function path(string $queue): string
+    protected function withLock(callable $fn): mixed
     {
-        return "{$this->dir}/{$queue}.json";
-    }
-
-    protected function withLock(string $queue, callable $fn): mixed
-    {
-        $file = $this->path($queue);
-        $handle = fopen($file, 'c+');
+        $handle = fopen($this->file, 'c+');
         flock($handle, LOCK_EX);
 
         $raw = stream_get_contents($handle);
@@ -49,9 +58,10 @@ class JsonDriver implements QueueDriverInterface
         $job->queue = $queue;
         $now = time();
 
-        return $this->withLock($queue, function (array $records) use ($job, $delay, $now) {
+        return $this->withLock(function (array $records) use ($job, $queue, $delay, $now) {
             $records[] = [
                 'id' => $job->id,
+                'queue' => $queue,
                 'payload' => $job->serializePayload(),
                 'attempts' => 0,
                 'reserved_at' => null,
@@ -66,9 +76,9 @@ class JsonDriver implements QueueDriverInterface
     {
         $now = time();
 
-        return $this->withLock($queue, function (array $records) use ($queue, $now) {
+        return $this->withLock(function (array $records) use ($queue, $now) {
             foreach ($records as $i => &$r) {
-                if ($r['reserved_at'] === null && $r['available_at'] <= $now) {
+                if ($r['queue'] === $queue && $r['reserved_at'] === null && $r['available_at'] <= $now) {
                     $r['reserved_at'] = $now;
                     $r['attempts'] += 1;
 
@@ -91,9 +101,9 @@ class JsonDriver implements QueueDriverInterface
 
     public function release(string $id, string $queue = 'default', int $delay = 0): void
     {
-        $this->withLock($queue, function (array $records) use ($id, $delay) {
+        $this->withLock(function (array $records) use ($id, $queue, $delay) {
             foreach ($records as &$r) {
-                if ($r['id'] === $id) {
+                if ($r['id'] === $id && $r['queue'] === $queue) {
                     $r['reserved_at'] = null;
                     $r['available_at'] = time() + $delay;
                     break;
@@ -105,16 +115,22 @@ class JsonDriver implements QueueDriverInterface
 
     public function delete(string $id, string $queue = 'default'): void
     {
-        $this->withLock($queue, function (array $records) use ($id) {
-            $records = array_values(array_filter($records, fn($r) => $r['id'] !== $id));
+        $this->withLock(function (array $records) use ($id, $queue) {
+            $records = array_values(array_filter(
+                $records,
+                fn($r) => !($r['id'] === $id && $r['queue'] === $queue)
+            ));
             return ['records' => $records];
         });
     }
 
     public function size(string $queue = 'default'): int
     {
-        return $this->withLock($queue, function (array $records) {
-            $count = count(array_filter($records, fn($r) => $r['reserved_at'] === null));
+        return $this->withLock(function (array $records) use ($queue) {
+            $count = count(array_filter(
+                $records,
+                fn($r) => $r['queue'] === $queue && $r['reserved_at'] === null
+            ));
             return ['records' => $records, 'return' => $count];
         });
     }

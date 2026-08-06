@@ -35,6 +35,22 @@ class DatabaseDriver implements QueueDriverInterface
         $this->model = new QueueModel($connection);
     }
 
+    /**
+     * Create the jobs table if it doesn't exist yet, via
+     * Laika\Queue\Schema\QueueModelSchema (Schema::createIfNotExists()
+     * under the hood, so this is safe to call every time — not just once).
+     *
+     * An alternative to `php laika app:migrate` for callers that aren't
+     * running inside a full Laika app (or just want the driver to be
+     * self-sufficient). Requires laikait/laika-core — see README — since
+     * that's what QueueModelSchema's base class lives in; this package
+     * itself doesn't hard-depend on it.
+     */
+    public function ensureSchema(): void
+    {
+        (new \Laika\Queue\Schema\QueueModelSchema($this->connection))->up();
+    }
+
     public function push(Job $job, string $queue = 'default', int $delay = 0): string
     {
         $job->id = $job->id ?: bin2hex(random_bytes(16));

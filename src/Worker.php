@@ -34,8 +34,10 @@ class Worker
         pcntl_signal(SIGCONT, fn() => $this->paused = false);
     }
 
-    public function work(string $queue = 'default', int $sleep = 3, int $timeout = 60, int $memoryLimit = 128): void
+    public function work(string $queue = 'default', int $sleep = 3, int $timeout = 60, ?int $memoryLimit = null): void
     {
+        $memoryLimit ??= $this->resolveMemoryLimitMb();
+
         while (!$this->shouldQuit) {
             if ($this->paused) {
                 usleep(500000);
@@ -133,5 +135,43 @@ class Worker
         if ((memory_get_usage(true) / 1024 / 1024) >= $limitMb) {
             $this->shouldQuit = true;
         }
+    }
+
+    /**
+     * Auto-derive the soft memory-limit threshold (MB) used by
+     * stopIfMemoryExceeded() when work() isn't given an explicit one —
+     * ~90% of PHP's actual current memory_limit ini setting (as read via
+     * Laika\Core\System\MemoryManager, when installed — see
+     * laikait/laika-core), so the worker exits gracefully (for
+     * supervisor/systemd to restart) before genuinely risking a hard OOM
+     * mid-job, rather than a fixed number picked without knowing the real
+     * ceiling.
+     *
+     * Falls back to a flat 128MB when laika-core isn't installed, the ini
+     * value can't be parsed, or memory_limit is unlimited ('-1') — this
+     * class otherwise has no hard dependency on laika-core, same
+     * lazy-reference pattern as DatabaseDriver::ensureSchema().
+     */
+    protected function resolveMemoryLimitMb(): int
+    {
+        $fallback = 128;
+
+        if (!class_exists(\Laika\Core\System\MemoryManager::class)) {
+            return $fallback;
+        }
+
+        $limit = trim((string) (new \Laika\Core\System\MemoryManager())->currentLimit());
+
+        if (!preg_match('/^(\d+)\s*([kmg])$/i', $limit, $m)) {
+            return $fallback;
+        }
+
+        $mb = match (strtolower($m[2])) {
+            'g' => (int) $m[1] * 1024,
+            'k' => (int) ceil((int) $m[1] / 1024),
+            default => (int) $m[1], // 'm'
+        };
+
+        return max(1, (int) floor($mb * 0.9));
     }
 }

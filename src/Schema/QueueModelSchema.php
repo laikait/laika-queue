@@ -20,6 +20,11 @@ class QueueModelSchema extends SchemaAbstract
     /** @var string Database Connection Name */
     protected string $connection = 'default';
 
+    public function __construct(string $connection = 'default')
+    {
+        $this->connection = $connection;
+    }
+
     public function up(): void
     {
         Schema::on($this->connection)->createIfNotExists($this->table, function(Blueprint $t) {

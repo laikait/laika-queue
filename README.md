@@ -67,16 +67,26 @@ $worker = new Worker($driver, $failedJobProvider);
 $worker->work('emails');
 ```
 
-**`DatabaseDriver`/`DatabaseFailedJobProvider` don't create their table.** Run `php laika app:migrate` (see below), or call it yourself before first use:
+**`DatabaseDriver`/`DatabaseFailedJobProvider` don't create their table by themselves — call `ensureSchema()` once you've constructed them.** The `worker` executable already does this for you whenever `driver`/`failed_driver` resolves to `'database'` (see [Worker](#worker) below); construct the classes directly and you need to call it yourself:
 
 ```php
-use Laika\Model\Schema\Schema;
+// Idempotent (CREATE TABLE IF NOT EXISTS under the hood), safe to call
+// every time — targets whichever connection you constructed it with.
+$driver->ensureSchema();
+$failer->ensureSchema();
+```
+
+That's `Laika\Queue\Schema\QueueModelSchema`/`FailedJobModelSchema` under the hood — reach for those directly instead if you'd rather:
+
+```php
 use Laika\Queue\Schema\QueueModelSchema;
 use Laika\Queue\Schema\FailedJobModelSchema;
 
-(new QueueModelSchema())->up();
-(new FailedJobModelSchema())->up();
+(new QueueModelSchema('default'))->up();
+(new FailedJobModelSchema('default'))->up();
 ```
+
+Either way requires `laikait/laika-core` (it's what `QueueModelSchema`/`FailedJobModelSchema` extend) — or run `php laika app:migrate` (see below), which discovers both automatically with no code needed.
 
 ### Models & Schemas (`php laika app:migrate`)
 
@@ -84,7 +94,7 @@ use Laika\Queue\Schema\FailedJobModelSchema;
 
 Alongside them, `Laika\Queue\Schema\QueueModelSchema` and `Laika\Queue\Schema\FailedJobModelSchema` extend `Laika\Core\Abstracts\SchemaAbstract` and own the actual table DDL. `helpers/loader.php` registers both directories with the framework's resource loader on install, so if this package is installed inside a Laika app (with `laikait/laika-core` present), `php laika app:migrate` discovers them automatically alongside your own `lf-app/Schema` classes — no wiring needed. That's now the only place these two tables get created; the drivers themselves stay framework-agnostic and just query.
 
-`laikait/laika-core` is *not* a hard dependency of laika-queue: the Schema classes are plain PSR-4 files, lazily autoloaded only when something actually references them (i.e. only when `app:migrate`, or you, instantiate them) — never as a side effect of merely using `DatabaseDriver`.
+`laikait/laika-core` is *not* a hard dependency of laika-queue: the Schema classes are plain PSR-4 files, lazily autoloaded only when something actually references them — constructing `DatabaseDriver`/`DatabaseFailedJobProvider` on their own never touches them. Calling `ensureSchema()` does (see [above](#usage)) — and the `worker` executable calls it for you, so running `worker` with a `database` driver does pull `laikait/laika-core` in, just not the bare classes by themselves.
 
 ### `pop()` has no locking clause — read this before running multiple workers
 
@@ -151,7 +161,31 @@ php worker default
 
 (`vendor/laikait/laika-queue/bin/worker default` also works directly — the project-root `worker` executable above is just a thin proxy to it, generated automatically, same idea as `laikait/laika-cli`'s `laika` entrypoint.)
 
+The queue name (`default` above) is `$argv[1]`, and it's optional — plain `php worker` with no argument falls back to `'default'` too. One worker process handles exactly one queue name; run it multiple times (with different `numprocs`/program blocks below) for more than one. There's no validation against `lf-config/queue.php` or anything else — a typo'd name (`php worker emials`) doesn't error, it just runs forever quietly popping nothing.
+
+### Choosing a driver
+
+The `worker` executable doesn't hardcode a backend — it reads `lf-config/queue.php`'s `driver` key and builds whichever of the three ships with this package:
+
+```php
+// lf-config/queue.php
+return [
+    'driver' => 'json', // 'json' (default) | 'database' | 'redis'
+    // ...
+];
+```
+
+- **`database`** — `DatabaseDriver` against `connection` (default: `'default'`, see `lf-config/database.php`).
+- **`redis`** — `RedisDriver::fromConfig()`, connecting with the app's existing `lf-config/redis.php` as-is (no separate queue connection to configure). Keys are namespaced under that file's `prefix` + `:queue`, so queue keys can't collide with cache/session keys sharing the same prefix. Requires `ext-redis`.
+- **`json`** — `JsonDriver`, no config: always `lf-storage/queues/jobs.json` (every queue in one file, filtered by a `queue` field per record).
+
+Failed jobs are wired independently via `failed_driver` (`'database'` | `'json'`) since there's no Redis-backed failed-job provider — it defaults to `'database'` when `driver` is `'database'`, and to `'json'` otherwise. See `lf-config/queue.php` for the full set of keys.
+
+Whichever side (`driver` and/or `failed_driver`) resolves to `'database'`, the worker calls that class's `ensureSchema()` right after constructing it — `laika_queue_jobs`/`laika_failed_jobs` get created automatically on first run, no `php laika app:migrate` needed first.
+
 Handles `SIGTERM`/`SIGINT` (graceful stop), `SIGUSR2`/`SIGCONT` (pause/resume), per-job timeout via `pcntl_fork`, and memory-limit auto-restart. Requires `pcntl`/`posix` (Linux/macOS) — degrades to no-timeout inline execution without them. A job that times out repeatedly is subject to the same `maxTries` limit as a job that throws — once exhausted it's logged to the failed-job provider instead of being released forever.
+
+Memory limits come from the framework's own `CLI_MEMORY_LIMIT` (`lf-inc/const.php`), not a hardcoded value: `worker` applies it as this process's actual `memory_limit` ini ceiling via `Laika\Core\System\MemoryManager::apply()` (a no-op if `laikait/laika-core` isn't installed). `Worker::work()` doesn't need to be told that value — leave its `memoryLimit` argument as `null` (the default) and it reads PHP's *current* `memory_limit` itself (again via `MemoryManager`, when installed) and auto-derives a soft-restart threshold at ~90% of it, so the graceful auto-restart above triggers before that ceiling risks a hard OOM mid-job. Pass an explicit `int` instead if you want to override it. Falls back to a flat 128MB when `laikait/laika-core` isn't installed, or `memory_limit` is unlimited (`-1`).
 
 The worker only runs inside a Laika app (it requires `lf-boot/app.php`): it sources trusted job classes from `lf-config/queue.php` and the DB connection from `lf-config/database.php` automatically — `Laika\Model\Model` self-connects via `Laika\Core\Helper\Init::db()` the moment `DatabaseDriver` constructs its model, so there's nothing else to configure here.
 
@@ -181,7 +215,7 @@ Pass a `FailedJobProviderInterface` (`DatabaseFailedJobProvider` or `JsonFailedJ
 ## Requirements
 
 - PHP 8.1+
-- [`laikait/laika-model`](https://github.com/laikait/laika-model) — required for `DatabaseDriver`/`DatabaseFailedJobProvider`. It has no tagged release yet, so `composer.json` currently pins `dev-main`; re-pin to a real version once one exists.
+- [`laikait/laika-model`](https://github.com/laikait/laika-model) — required for `DatabaseDriver`/`DatabaseFailedJobProvider`, same as `laikait/laika-core` for `ensureSchema()`/`app:migrate`: not declared in `composer.json` at all, since `RedisDriver`/`JsonDriver` don't need it — install it yourself if you're using the database backend.
 - `ext-redis` for `RedisDriver`
 - `ext-pcntl` + `ext-posix` for full `Worker` signal/timeout support (Linux/macOS only)
 
