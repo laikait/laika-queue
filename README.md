@@ -8,6 +8,41 @@ Queue package for the [Laika PHP MVC Framework](https://github.com/laikait). Dat
 composer require laikait/laika-queue
 ```
 
+The first time Composer builds the autoloader (`composer install`/`update`)
+inside a Laika app, a `worker` executable is generated automatically in your
+project root — no manual step needed:
+
+```bash
+php worker default
+```
+
+> Composer 2.2+ requires explicit trust for packages that ship a plugin. If
+> you see a warning about `laikait/laika-queue` not being allowed to run
+> code, add it to your project's `composer.json`:
+> ```json
+> "config": {
+>     "allow-plugins": {
+>         "laikait/laika-queue": true
+>     }
+> }
+> ```
+> (Already set up for you if you started from `laikait/laika-framework`.)
+
+### Global install
+Prefer a single `worker` command available in every project? Install it
+globally instead:
+```bash
+composer global require laikait/laika-queue
+```
+Make sure Composer's global `vendor/bin` directory is on your `PATH` (see the
+[Composer docs](https://getcomposer.org/doc/03-cli.md#global)), then run
+`worker` from inside any Laika project directory (or a sub-directory of it):
+```bash
+worker default
+```
+The global binary detects the current project by walking up from your
+working directory until it finds `lf-boot/app.php` — no `php` prefix needed.
+
 ## Usage
 
 `DatabaseDriver` and `DatabaseFailedJobProvider` are built on [laikait/laika-model](https://github.com/laikait/laika-model) — register a connection by name with `Laika\Model\Connection` first, then hand the driver that name (it doesn't open PDO itself, and never accepts a raw connection object):
@@ -106,17 +141,19 @@ Job::registerTrustedClasses([
 ]);
 ```
 
-Do this once at bootstrap, before any driver's `pop()` is called. `bin/worker` reads this list from `lf-config/queue.php`'s `trusted_job_classes` key via the framework's `config()` helper.
+Do this once at bootstrap, before any driver's `pop()` is called. The `worker` executable reads this list from `lf-config/queue.php`'s `trusted_job_classes` key via the framework's `config()` helper.
 
 ## Worker
 
 ```bash
-php bin/worker default
+php worker default
 ```
+
+(`vendor/laikait/laika-queue/bin/worker default` also works directly — the project-root `worker` executable above is just a thin proxy to it, generated automatically, same idea as `laikait/laika-cli`'s `laika` entrypoint.)
 
 Handles `SIGTERM`/`SIGINT` (graceful stop), `SIGUSR2`/`SIGCONT` (pause/resume), per-job timeout via `pcntl_fork`, and memory-limit auto-restart. Requires `pcntl`/`posix` (Linux/macOS) — degrades to no-timeout inline execution without them. A job that times out repeatedly is subject to the same `maxTries` limit as a job that throws — once exhausted it's logged to the failed-job provider instead of being released forever.
 
-`bin/worker` only runs inside a Laika app (it requires `lf-boot/app.php`): it sources trusted job classes from `lf-config/queue.php` and the DB connection from `lf-config/database.php` automatically — `Laika\Model\Model` self-connects via `Laika\Core\Helper\Init::db()` the moment `DatabaseDriver` constructs its model, so there's nothing else to configure here.
+The worker only runs inside a Laika app (it requires `lf-boot/app.php`): it sources trusted job classes from `lf-config/queue.php` and the DB connection from `lf-config/database.php` automatically — `Laika\Model\Model` self-connects via `Laika\Core\Helper\Init::db()` the moment `DatabaseDriver` constructs its model, so there's nothing else to configure here.
 
 `RedisDriver` implements `ReconnectableDriver`: in the freshly forked child, `Worker` calls its `reconnect()`, which drops and reopens the connection so the child doesn't share the parent's socket — build it with `::fromConfig()` (not an already-open `Redis` instance) if it'll run inside a forking `Worker`. `DatabaseDriver`/`DatabaseFailedJobProvider` don't implement this — laika-model's `Connection` registry owns the PDO connection's lifecycle, not the driver.
 
@@ -124,7 +161,7 @@ Keep the worker alive with supervisor or systemd (it self-exits on memory limit,
 
 ```ini
 [program:laika-queue-worker]
-command=php /path/to/bin/worker default
+command=php /path/to/project/worker default
 autostart=true
 autorestart=true
 numprocs=2
