@@ -6,6 +6,10 @@
     "keywords": ["laika", "queue", "jobs", "worker", "php"],
     "authors": [
         {
+            "name": "Laika IT",
+            "email": "strblackhawk@gmail.com"
+        },
+        {
             "name": "Showket Ahmed",
             "email": "riyadhtayf@gmail.com"
         }

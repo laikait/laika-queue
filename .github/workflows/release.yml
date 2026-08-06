@@ -19,6 +19,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
+      # Validate composer.json Before Packaging
+      - name: Validate composer.json
+        run: composer validate --no-check-publish
+
+      # Lint PHP Syntax Before Packaging
+      - name: Lint PHP syntax
+        run: |
+          find src helpers -name '*.php' -print0 | xargs -0 -n1 php -l
+          php -l bin/worker
+
       # Prepare Build Artifact
       - name: Prepare release artifact
         run: |
