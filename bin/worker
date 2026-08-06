@@ -1,0 +1,46 @@
+#!/usr/bin/env php
+<?php
+
+use Laika\Queue\Worker;
+use Laika\Queue\Abstracts\Job;
+use Laika\Queue\Driver\DatabaseDriver;
+use Laika\Queue\Driver\DatabaseFailedJobProvider;
+use Laika\Model\Connection;
+
+// Define App Path & Directory Separator. This file always lives at
+// <app>/vendor/laikait/laika-queue/bin/worker (direct call, or via
+// Composer's generated vendor/bin/worker proxy — that proxy is a
+// plain include, so __DIR__ here is unaffected either way) — 4 levels up
+// from bin/ is the app root, where lf-boot/app.php lives.
+defined('APP_PATH') || define('APP_PATH', realpath(__DIR__ . '/../../../../'));
+
+require APP_PATH . '/lf-boot/app.php';
+
+$queue = $argv[1] ?? 'default';
+
+// Job payloads are only unserialize()'d if their class is registered here —
+// see Job::registerTrustedClasses(). List them in lf-config/queue.php
+// ('trusted_job_classes' => [...]); read here via the framework's config()
+// helper.
+$trusted = array_filter((array) config('queue', 'trusted_job_classes', []));
+if ($trusted) Job::registerTrustedClasses($trusted);
+
+// Connection is a name -> config registry (see laikait/laika-model); PDO
+// itself isn't opened until the driver first touches it. Laika\Model\Model
+// would connect itself automatically anyway (its constructor calls
+// Init::db($connection), which does exactly this same
+// Connection::add(config('database', ...)) — see Laika\Core\Helper\Init)
+// the moment DatabaseDriver below constructs QueueModel; adding it here
+// upfront just makes the failure surface immediately instead of on first
+// query, and keeps this script explicit about where its connection comes
+// from.
+Connection::add(config('database', 'default'));
+
+$driver = new DatabaseDriver('default');
+$failer = new DatabaseFailedJobProvider('default');
+
+$worker = new Worker($driver, $failer);
+
+fwrite(STDOUT, "[laika-queue] worker started on queue '{$queue}'\n");
+
+$worker->work($queue);
