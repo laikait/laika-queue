@@ -28,7 +28,7 @@
         }
     },
     "bin": [
-        "bin/laika-worker"
+        "bin/worker"
     ],
     "minimum-stability": "stable"
 }
