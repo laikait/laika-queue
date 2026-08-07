@@ -8,9 +8,15 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
 {
     protected string $file;
 
-    public function __construct(string $file)
+    public function __construct()
     {
-        $this->file = $file;
+        $this->file = APP_PATH . '/lf-storage/queues/failed.json';
+
+        $dir = dirname($this->file);
+        if (!is_dir($dir)) {
+            mkdir($dir, recursive:true);
+            setPermission($dir, 0775);
+        }
         if (!is_file($this->file)) {
             file_put_contents($this->file, json_encode([]));
         }

@@ -5,16 +5,68 @@ use Laika\Queue\Worker;
 use Laika\Queue\Abstracts\Job;
 use Laika\Queue\Driver\DatabaseDriver;
 use Laika\Queue\Driver\DatabaseFailedJobProvider;
+use Laika\Queue\Driver\RedisDriver;
+use Laika\Queue\Driver\JsonDriver;
+use Laika\Queue\Driver\JsonFailedJobProvider;
 use Laika\Model\Connection;
 
-// Define App Path & Directory Separator. This file always lives at
-// <app>/vendor/laikait/laika-queue/bin/worker (direct call, or via
-// Composer's generated vendor/bin/worker proxy — that proxy is a
-// plain include, so __DIR__ here is unaffected either way) — 4 levels up
-// from bin/ is the app root, where lf-boot/app.php lives.
-defined('APP_PATH') || define('APP_PATH', realpath(__DIR__ . '/../../../../'));
+/**
+ * Resolve APP_PATH (the Laika project root).
+ *
+ * This file runs in three different contexts:
+ *
+ *  1. Local install, direct call — vendor/laikait/laika-queue/bin/worker,
+ *     or Composer's generated vendor/bin/worker proxy (a plain include, so
+ *     __DIR__ here is unaffected either way). 4 levels up from bin/ is the
+ *     app root, where lf-boot/app.php lives.
+ *
+ *  2. Local install, project-root proxy — the `worker` executable
+ *     QueuePlugin generates in the project root on every `composer
+ *     install`/`update`. That proxy just requires this file directly, so
+ *     it still resolves to case 1 above.
+ *
+ *  3. Global install — invoked as `worker` from anywhere on the system
+ *     after `composer global require laikait/laika-queue`. This file then
+ *     lives under the global Composer home, nowhere near the project, so
+ *     the root is instead resolved by walking up from the current working
+ *     directory until a Laika project (lf-boot/app.php) is found.
+ */
+if (!defined('APP_PATH')) {
+    $local = realpath(__DIR__ . '/../../../../');
+
+    if ($local && is_file($local . '/lf-boot/app.php')) {
+        define('APP_PATH', $local);
+    } else {
+        $dir = getcwd();
+
+        while ($dir !== false) {
+            if (is_file($dir . '/lf-boot/app.php')) {
+                define('APP_PATH', $dir);
+                break;
+            }
+
+            $parent = dirname($dir);
+            $dir = ($parent === $dir) ? false : $parent;
+        }
+    }
+}
+
+if (!defined('APP_PATH')) {
+    fwrite(STDERR, "\nERROR: This is not a Laika project (lf-boot/app.php not found).\n");
+    fwrite(STDERR, "Run \"worker\" from your Laika project root, or a sub-directory of it.\n\n");
+    exit(1);
+}
 
 require APP_PATH . '/lf-boot/app.php';
+
+// Apply the framework's CLI memory ceiling (lf-inc/const.php's
+// CLI_MEMORY_LIMIT) to this process's actual memory_limit ini setting.
+// Optional: only laika-core ships MemoryManager, and this script otherwise
+// has no hard dependency on it — same lazy-reference pattern as
+// DatabaseDriver::ensureSchema() below.
+if (class_exists(\Laika\Core\System\MemoryManager::class)) {
+    (new \Laika\Core\System\MemoryManager())->apply();
+}
 
 $queue = $argv[1] ?? 'default';
 
@@ -25,22 +77,83 @@ $queue = $argv[1] ?? 'default';
 $trusted = array_filter((array) config('queue', 'trusted_job_classes', []));
 if ($trusted) Job::registerTrustedClasses($trusted);
 
-// Connection is a name -> config registry (see laikait/laika-model); PDO
-// itself isn't opened until the driver first touches it. Laika\Model\Model
-// would connect itself automatically anyway (its constructor calls
-// Init::db($connection), which does exactly this same
-// Connection::add(config('database', ...)) — see Laika\Core\Helper\Init)
-// the moment DatabaseDriver below constructs QueueModel; adding it here
-// upfront just makes the failure surface immediately instead of on first
-// query, and keeps this script explicit about where its connection comes
-// from.
-Connection::add(config('database', 'default'));
+// Which backend to run against — 'database' (default, backward compatible),
+// 'redis', or 'json'. Set via lf-config/queue.php's 'driver' key; each of
+// the three drivers ships with this package (see Laika\Queue\Driver\*) and
+// all three implement the same QueueDriverInterface, so nothing below this
+// switch needs to know which one is in use.
+$driverName = strtolower((string) config('queue', 'driver', 'database'));
+$connection = (string) config('queue', 'connection', 'default');
 
-$driver = new DatabaseDriver('default');
-$failer = new DatabaseFailedJobProvider('default');
+switch ($driverName) {
+    case 'redis':
+        if (!class_exists(\Redis::class)) {
+            fwrite(STDERR, "[laika-queue] queue.driver is 'redis' but the redis extension isn't loaded.\n");
+            exit(1);
+        }
+
+        // Connects using the app's existing lf-config/redis.php as-is — no
+        // separate queue.redis config to keep in sync with it.
+        $redisConfig = [
+            'host' => config('redis', 'host', '127.0.0.1'),
+            'port' => config('redis', 'port', 6379),
+            'auth' => config('redis', 'password') ?: null,
+        ];
+
+        // Namespaced under redis.php's own prefix + ':queue' so queue keys
+        // (pending/delayed/reserved/jobs) can't collide with cache/session
+        // keys sharing that same prefix.
+        $prefix = trim((string) config('redis', 'prefix', 'laika'), ':') . ':queue';
+
+        // fromConfig() (not a raw Redis instance) so Worker's forked children
+        // reconnect() with their own socket instead of sharing the parent's.
+        $driver = RedisDriver::fromConfig($redisConfig, $prefix);
+        break;
+
+    case 'json':
+        $driver = new JsonDriver();
+        break;
+
+    case 'database':
+    default:
+        // Connection is a name -> config registry (see laikait/laika-model);
+        // PDO itself isn't opened until the driver first touches it.
+        // Laika\Model\Model would connect itself automatically anyway (its
+        // constructor calls Init::db($connection), which does exactly this
+        // same Connection::add(config('database', ...)) — see
+        // Laika\Core\Helper\Init) the moment DatabaseDriver below constructs
+        // QueueModel; adding it here upfront just makes the failure surface
+        // immediately instead of on first query, and keeps this script
+        // explicit about where its connection comes from.
+        Connection::add(config('database', $connection));
+        $driver = new DatabaseDriver($connection);
+        $driver->ensureSchema();
+        break;
+}
+
+// Failed-job provider is chosen independently via 'failed_driver' — there's
+// no RedisFailedJobProvider, so a 'redis' queue driver still needs an
+// explicit database/json choice here. Defaults to whatever family the queue
+// driver itself is in ('database' stays 'database'; 'redis'/'json' fall
+// back to 'json', since that needs no extra setup).
+$failedDriverName = strtolower((string) config('queue', 'failed_driver', $driverName === 'database' ? 'database' : 'json'));
+
+if ($failedDriverName === 'database') {
+    if ($driverName !== 'database') {
+        Connection::add(config('database', $connection));
+    }
+    $failer = new DatabaseFailedJobProvider($connection);
+    $failer->ensureSchema();
+} else {
+    $failer = new JsonFailedJobProvider();
+}
 
 $worker = new Worker($driver, $failer);
 
 fwrite(STDOUT, "[laika-queue] worker started on queue '{$queue}'\n");
 
+// No memoryLimit passed — Worker::work() auto-derives its soft-restart
+// threshold (~90% of PHP's actual memory_limit) via
+// Laika\Core\System\MemoryManager, reading the exact ini value the
+// MemoryManager::apply() call above just set from CLI_MEMORY_LIMIT.
 $worker->work($queue);

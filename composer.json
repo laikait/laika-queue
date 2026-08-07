@@ -1,10 +1,14 @@
 {
     "name": "laikait/laika-queue",
     "description": "Queue package for the Laika PHP MVC Framework — database, Redis, and JSON drivers with a signal-aware worker.",
-    "type": "library",
+    "type": "composer-plugin",
     "license": "MIT",
     "keywords": ["laika", "queue", "jobs", "worker", "php"],
     "authors": [
+        {
+            "name": "Laika IT",
+            "email": "strblackhawk@gmail.com"
+        },
         {
             "name": "Showket Ahmed",
             "email": "riyadhtayf@gmail.com"
@@ -12,7 +16,11 @@
     ],
     "require": {
         "php": "^8.1",
-        "ext-pdo": "*"
+        "ext-pdo": "*",
+        "composer-plugin-api": "^2.0"
+    },
+    "require-dev": {
+        "composer/composer": "^2.0"
     },
     "suggest": {
         "ext-redis": "Required to use RedisDriver",
@@ -30,5 +38,13 @@
     "bin": [
         "bin/worker"
     ],
+    "config": {
+        "allow-plugins": {
+            "laikait/laika-queue": true
+        }
+    },
+    "extra": {
+        "class": "Laika\\Queue\\Plugin\\QueuePlugin"
+    },
     "minimum-stability": "stable"
 }
