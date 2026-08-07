@@ -15,7 +15,7 @@ jobs:
   # VALIDATE & LINT
   ########################################################
   test:
-    name: Validate & Lint (PHP ${{ matrix.php-version }})
+    name: Validate PHP ${{ matrix.php-version }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
