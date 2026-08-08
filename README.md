@@ -151,7 +151,7 @@ Job::registerTrustedClasses([
 ]);
 ```
 
-Do this once at bootstrap, before any driver's `pop()` is called. The `worker` executable reads this list from `lf-config/queue.php`'s `trusted_job_classes` key via the framework's `config()` helper.
+Do this once at bootstrap, before any driver's `pop()` is called. Inside a Laika framework app, the `worker` executable does this for you automatically — every `Job` subclass discovered under `lf-app/Job` (via the framework's `Laika\Service\Infra::getQueueJobsClasses()`) is registered as trusted on startup, no config needed. Call `registerTrustedClasses()` yourself for anything outside that directory, or when using this package standalone (without `laikait/laika-core`).
 
 ## Worker
 
