@@ -9,6 +9,7 @@ use Laika\Queue\Driver\RedisDriver;
 use Laika\Queue\Driver\JsonDriver;
 use Laika\Queue\Driver\JsonFailedJobProvider;
 use Laika\Model\Connection;
+use Laika\Service\Infra;
 
 /**
  * Resolve APP_PATH (the Laika project root).
@@ -71,10 +72,12 @@ if (class_exists(\Laika\Core\System\MemoryManager::class)) {
 $queue = $argv[1] ?? 'default';
 
 // Job payloads are only unserialize()'d if their class is registered here —
-// see Job::registerTrustedClasses(). List them in lf-config/queue.php
-// ('trusted_job_classes' => [...]); read here via the framework's config()
-// helper.
-$trusted = array_filter((array) config('queue', 'trusted_job_classes', []));
+// see Job::registerTrustedClasses(). Every Job subclass discovered under
+// lf-app/Job is trusted automatically (Infra::getQueueJobsClasses() only
+// admits classes that pass is_subclass_of(Job::class), so this stays
+// narrower than trusting the codebase at large); no lf-config/queue.php
+// entry needed.
+$trusted = Infra::getQueueJobsClasses();
 if ($trusted) Job::registerTrustedClasses($trusted);
 
 // Which backend to run against — 'database' (default, backward compatible),

@@ -8,25 +8,47 @@ Queue package for the [Laika PHP MVC Framework](https://github.com/laikait). Dat
 composer require laikait/laika-queue
 ```
 
-The first time Composer builds the autoloader (`composer install`/`update`)
-inside a Laika app, a `worker` executable is generated automatically in your
-project root — no manual step needed:
+If you started from `laikait/laika-framework`, the wiring below is already in
+your `composer.json` and a `worker` executable is generated for you on
+`composer install`, `update`, `dump-autoload` and `create-project` — no
+manual step needed:
 
 ```bash
 php worker default
 ```
 
-> Composer 2.2+ requires explicit trust for packages that ship a plugin. If
-> you see a warning about `laikait/laika-queue` not being allowed to run
-> code, add it to your project's `composer.json`:
-> ```json
-> "config": {
->     "allow-plugins": {
->         "laikait/laika-queue": true
->     }
-> }
-> ```
-> (Already set up for you if you started from `laikait/laika-framework`.)
+### Wiring it up manually
+
+Composer only runs scripts declared by the **root** project, never by a
+dependency. So a project that wasn't created from the framework skeleton
+needs to call the generator itself:
+
+```json
+"scripts": {
+    "post-autoload-dump": [
+        "Laika\\Queue\\ScriptHandler::generate"
+    ],
+    "post-create-project-cmd": [
+        "Laika\\Queue\\ScriptHandler::generate"
+    ]
+}
+```
+
+### What gets generated
+
+| File | Platform | How you run it |
+| --- | --- | --- |
+| `worker` | all | `php worker default` — or `./worker default` on Linux/macOS |
+| `worker.bat` | Windows only | `worker default` in cmd, `.\worker default` in PowerShell |
+
+Both are thin proxies into `vendor/laikait/laika-queue`, so they always match
+the version this project has installed. They are rewritten only when their
+content actually changes, and regenerate if you delete them.
+
+> Versions before 2.0 shipped this package as a Composer *plugin*, which
+> required an `allow-plugins` entry in every consuming project. That is no
+> longer needed — you can drop `"laikait/laika-queue": true` from your
+> `config.allow-plugins`.
 
 ### Global install
 Prefer a single `worker` command available in every project? Install it
@@ -151,7 +173,7 @@ Job::registerTrustedClasses([
 ]);
 ```
 
-Do this once at bootstrap, before any driver's `pop()` is called. The `worker` executable reads this list from `lf-config/queue.php`'s `trusted_job_classes` key via the framework's `config()` helper.
+Do this once at bootstrap, before any driver's `pop()` is called. Inside a Laika framework app, the `worker` executable does this for you automatically — every `Job` subclass discovered under `lf-app/Job` (via the framework's `Laika\Service\Infra::getQueueJobsClasses()`) is registered as trusted on startup, no config needed. Call `registerTrustedClasses()` yourself for anything outside that directory, or when using this package standalone (without `laikait/laika-core`).
 
 ## Worker
 
