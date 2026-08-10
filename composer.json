@@ -3,7 +3,14 @@
     "description": "Queue package for the Laika PHP MVC Framework — database, Redis, and JSON drivers with a signal-aware worker.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["laika", "queue", "jobs", "worker", "php"],
+    "keywords": [
+        "laika",
+        "queue",
+        "jobs",
+        "worker",
+        "php",
+        "framework"
+    ],
     "authors": [
         {
             "name": "Laika IT",
@@ -19,7 +26,10 @@
         "ext-pdo": "*"
     },
     "require-dev": {
-        "composer/composer": "^2.0"
+        "composer/composer": "^2.0",
+        "squizlabs/php_codesniffer": "^4.0.2",
+        "phpcompatibility/php-compatibility": "dev-develop",
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.1"
     },
     "suggest": {
         "ext-redis": "Required to use RedisDriver",
@@ -27,9 +37,6 @@
         "ext-posix": "Required alongside pcntl for signal handling (Linux/macOS only)"
     },
     "autoload": {
-        "files": [
-            "helpers/loader.php"
-        ],
         "psr-4": {
             "Laika\\Queue\\": "src/"
         }
@@ -37,5 +44,28 @@
     "bin": [
         "bin/worker"
     ],
-    "minimum-stability": "stable"
+    "minimum-stability": "stable",
+    "extra": {
+        "laika": {
+            "resources": {
+                "models": {
+                    "path": "src/Model",
+                    "namespace": "Laika\\Queue\\Model"
+                },
+                "schemas": {
+                    "path": "src/Schema",
+                    "namespace": "Laika\\Queue\\Schema",
+                    "contract": "Laika\\Core\\Abstracts\\SchemaAbstract"
+                }
+            }
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    },
+    "scripts": {
+        "compat": "phpcs --standard=phpcs.xml --report=full"
+    }
 }
