@@ -4,7 +4,7 @@ namespace Laika\Queue\Schema;
 
 use Laika\Model\Schema\Schema;
 use Laika\Model\Schema\Blueprint;
-use Laika\Core\Abstracts\SchemaAbstract;
+use Laika\Model\Contract\SchemaAbstract;
 
 /**
  * Discovered by `php laika app:migrate` via the resource loader (see
