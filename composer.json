@@ -55,7 +55,7 @@
                 "schemas": {
                     "path": "src/Schema",
                     "namespace": "Laika\\Queue\\Schema",
-                    "contract": "Laika\\Core\\Abstracts\\SchemaAbstract"
+                    "contract": "Laika\\Model\\Contract\\SchemaAbstract"
                 }
             }
         }
