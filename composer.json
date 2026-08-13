@@ -23,7 +23,8 @@
     ],
     "require": {
         "php": "^8.1",
-        "ext-pdo": "*"
+        "ext-pdo": "*",
+        "laikait/laika-core": "^4.3"
     },
     "require-dev": {
         "composer/composer": "^2.0",

@@ -25,22 +25,6 @@ class DatabaseFailedJobProvider implements FailedJobProviderInterface
         $this->model = (new FailedJobModel($connection));
     }
 
-    /**
-     * Create the failed-jobs table if it doesn't exist yet, via
-     * Laika\Queue\Schema\FailedJobModelSchema (Schema::createIfNotExists()
-     * under the hood, so this is safe to call every time — not just once).
-     *
-     * An alternative to `php laika app:migrate` for callers that aren't
-     * running inside a full Laika app (or just want the provider to be
-     * self-sufficient). Requires laikait/laika-core — see README — since
-     * that's what FailedJobModelSchema's base class lives in; this package
-     * itself doesn't hard-depend on it.
-     */
-    public function ensureSchema(): void
-    {
-        (new \Laika\Queue\Schema\FailedJobModelSchema($this->connection))->up();
-    }
-
     public function log(string $queue, string $payload, \Throwable $e): string
     {
         $id = bin2hex(random_bytes(16));
