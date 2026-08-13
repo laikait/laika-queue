@@ -1,45 +1,29 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Laika\Queue\Driver;
 
+use Laika\Core\Storage\JsonStorage;
 use Laika\Queue\Interfaces\FailedJobProviderInterface;
 
 class JsonFailedJobProvider implements FailedJobProviderInterface
 {
-    protected string $file;
+    protected JsonStorage $store;
 
     public function __construct()
     {
-        $this->file = APP_PATH . '/lf-storage/queues/failed.json';
-
-        $dir = dirname($this->file);
-        if (!is_dir($dir)) {
-            mkdir($dir, recursive:true);
-            setPermission($dir, 0775);
-        }
-        if (!is_file($this->file)) {
-            file_put_contents($this->file, json_encode([]));
-        }
+        $this->store = new JsonStorage(APP_PATH . '/lf-storage/queues');
     }
 
+    /**
+     * Run $fn against failed.json under one exclusive lock.
+     * The callback returns ['records' => …] to write, 'return' => … to hand back.
+     * Omitting 'records' skips the write entirely.
+     */
     protected function withLock(callable $fn): mixed
     {
-        $handle = fopen($this->file, 'c+');
-        flock($handle, LOCK_EX);
-
-        $raw = stream_get_contents($handle);
-        $records = $raw ? json_decode($raw, true) : [];
-
-        $result = $fn($records);
-
-        ftruncate($handle, 0);
-        rewind($handle);
-        fwrite($handle, json_encode($result['records'] ?? $records, JSON_PRETTY_PRINT));
-        fflush($handle);
-        flock($handle, LOCK_UN);
-        fclose($handle);
-
-        return $result['return'] ?? null;
+        return $this->store->mutate('failed', $fn);
     }
 
     public function log(string $queue, string $payload, \Throwable $e): string
@@ -62,7 +46,9 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
     {
         return $this->withLock(function (array $records) use ($queue) {
             $filtered = $queue ? array_values(array_filter($records, fn($r) => $r['queue'] === $queue)) : $records;
-            return ['records' => $records, 'return' => $filtered];
+
+            // Read only — no write
+            return ['return' => $filtered];
         });
     }
 
@@ -71,10 +57,12 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         return $this->withLock(function (array $records) use ($id) {
             foreach ($records as $r) {
                 if ($r['id'] === $id) {
-                    return ['records' => $records, 'return' => $r];
+                    return ['return' => $r];
                 }
             }
-            return ['records' => $records, 'return' => null];
+
+            // Read only — no write
+            return ['return' => null];
         });
     }
 

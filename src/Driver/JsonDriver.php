@@ -1,55 +1,40 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Laika\Queue\Driver;
 
+use Laika\Core\Storage\JsonStorage;
 use Laika\Queue\Interfaces\QueueDriverInterface;
 use Laika\Queue\Abstracts\Job;
 
 /**
  * Flat-file queue driver — good for local/dev, no external service needed.
  * Every queue shares a single lf-storage/queues/jobs.json file (one JSON
- * array of job records, each tagged with its 'queue'), guarded by flock()
- * so concurrent push()/pop() calls don't corrupt it. Same locking-clause
- * caveat as DatabaseDriver applies — see README — this isn't safe against
- * multiple worker processes racing on the same queue without idempotent
- * jobs.
+ * array of job records, each tagged with its 'queue'). Reads and writes go
+ * through JsonStorage::mutate(), which holds one exclusive lock across the
+ * whole read-modify-write so concurrent push()/pop() calls can't corrupt the
+ * file or hand the same job to two workers. Same locking-clause caveat as
+ * DatabaseDriver applies — see README — a job whose worker dies stays
+ * reserved, so jobs should still be idempotent.
  */
 class JsonDriver implements QueueDriverInterface
 {
-    protected string $file;
+    protected JsonStorage $store;
 
     public function __construct()
     {
-        $this->file = APP_PATH . '/lf-storage/queues/jobs.json';
-
-        $dir = dirname($this->file);
-        if (!is_dir($dir)) {
-            mkdir($dir, recursive:true);
-            setPermission($dir, 0775);
-        }
-        if (!is_file($this->file)) {
-            file_put_contents($this->file, json_encode([]));
-        }
+        $this->store = new JsonStorage(APP_PATH . '/lf-storage/queues');
     }
 
+    /**
+     * Run $fn against jobs.json under one exclusive lock.
+     * The callback returns ['records' => …] to write, 'return' => … to hand back.
+     * Omitting 'records' skips the write entirely.
+     */
     protected function withLock(callable $fn): mixed
     {
-        $handle = fopen($this->file, 'c+');
-        flock($handle, LOCK_EX);
-
-        $raw = stream_get_contents($handle);
-        $records = $raw ? json_decode($raw, true) : [];
-
-        $result = $fn($records);
-
-        ftruncate($handle, 0);
-        rewind($handle);
-        fwrite($handle, json_encode($result['records'] ?? $records, JSON_PRETTY_PRINT));
-        fflush($handle);
-        flock($handle, LOCK_UN);
-        fclose($handle);
-
-        return $result['return'] ?? null;
+        return $this->store->mutate('jobs', $fn);
     }
 
     public function push(Job $job, string $queue = 'default', int $delay = 0): string
@@ -74,10 +59,9 @@ class JsonDriver implements QueueDriverInterface
 
     public function pop(string $queue = 'default'): ?Job
     {
-        $now = time();
-
-        return $this->withLock(function (array $records) use ($queue, $now) {
-            foreach ($records as $i => &$r) {
+        return $this->withLock(function (array $records) use ($queue) {
+            $now = time();
+            foreach ($records as &$r) {
                 if ($r['queue'] === $queue && $r['reserved_at'] === null && $r['available_at'] <= $now) {
                     $r['reserved_at'] = $now;
                     $r['attempts'] += 1;
@@ -87,10 +71,14 @@ class JsonDriver implements QueueDriverInterface
                     $job->queue = $queue;
                     $job->tries = $r['attempts'];
 
+                    unset($r);
                     return ['records' => $records, 'return' => $job];
                 }
             }
-            return ['records' => $records, 'return' => null];
+            unset($r);
+
+            // Nothing claimed — no write
+            return ['return' => null];
         });
     }
 
@@ -109,6 +97,7 @@ class JsonDriver implements QueueDriverInterface
                     break;
                 }
             }
+            unset($r);
             return ['records' => $records];
         });
     }
@@ -131,7 +120,9 @@ class JsonDriver implements QueueDriverInterface
                 $records,
                 fn($r) => $r['queue'] === $queue && $r['reserved_at'] === null
             ));
-            return ['records' => $records, 'return' => $count];
+
+            // Read only — no write
+            return ['return' => $count];
         });
     }
 }

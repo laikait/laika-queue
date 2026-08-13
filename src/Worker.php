@@ -149,8 +149,8 @@ class Worker
      *
      * Falls back to a flat 128MB when laika-core isn't installed, the ini
      * value can't be parsed, or memory_limit is unlimited ('-1') — this
-     * class otherwise has no hard dependency on laika-core, same
-     * lazy-reference pattern as DatabaseDriver::ensureSchema().
+     * class otherwise has no hard dependency on laika-core, so the
+     * reference stays lazy.
      */
     protected function resolveMemoryLimitMb(): int
     {

@@ -123,13 +123,16 @@ return [
 ];
 ```
 
+Choosing `'database'` (or leaving `failed_driver` on `'database'`) needs its tables created once —
+`php laika app:migrate`. See [Schema & migrations](#schema--migrations).
+
 **4. Dispatch it** from a controller, service, anywhere:
 
 ```php
-use Laika\Cli\QueueResolver;
+use Laika\Core\Worker\Queue;
 use App\Job\SendWelcomeEmail;
 
-QueueResolver::driver()->push(new SendWelcomeEmail($userId), 'emails');
+Queue::driver()->push(new SendWelcomeEmail($userId), 'emails');
 ```
 
 **5. Run the worker**
@@ -157,6 +160,15 @@ return [
 
     // Failed-job provider: 'database' | 'json'. null mirrors 'driver'.
     'failed_driver' => null,
+
+    // How long (seconds) a reserved job may sit before a worker treats it as
+    // stalled and reclaims it. Redis driver only.
+    'reserve_timeout' => 90,
+
+    // Attempt ceiling applied when reclaiming stalled jobs: past this, the job
+    // goes to the dead set instead of back onto the queue. 0 disables the cap.
+    // Redis driver only.
+    'max_tries' => 3,
 ];
 ```
 
@@ -165,15 +177,17 @@ return [
 | `driver` | `'database'` when the key is absent entirely; the shipped config file sets `'json'` | Selects `DatabaseDriver`, `RedisDriver`, or `JsonDriver` |
 | `connection` | `'default'` | A connection *name* from `lf-config/database.php`, never a PDO instance |
 | `failed_driver` | `null` | `null` resolves to `'database'` when `driver` is `'database'`, otherwise `'json'` |
+| `reserve_timeout` | `90` | Seconds before a reserved job counts as stalled. **`RedisDriver` only** — the other two have no reaper |
+| `max_tries` | `3` | Reclaims allowed before a stalled job is moved to `:dead`. `0` disables the cap. **`RedisDriver` only** |
 
 **Why `failed_driver` is separate:** there is no Redis-backed failed-job provider. A `redis` queue driver still has to log its failures somewhere, so it falls back to `json` unless you say `'database'`.
 
-The `redis` and `json` drivers have no config of their own:
+Beyond `reserve_timeout` / `max_tries` above, the `redis` and `json` drivers have no connection config of their own:
 
-- **`redis`** connects with `lf-config/redis.php` as-is (`host`, `port`, `password`). Keys are namespaced under that file's `prefix` + `:queue`, so queue keys can't collide with cache or session keys sharing the prefix.
+- **`redis`** connects with `lf-config/redis.php` as-is, via `Laika\Core\Storage\Connection\RedisConnection` — the same factory `RedisStorage` uses, so it picks up `host`, `port`, `password`, `username` (Redis 6 ACL), `database`, `timeout` and `read_timeout`. Keys are namespaced under that file's `prefix` + `:queue`, so queue keys can't collide with cache or session keys sharing the prefix.
 - **`json`** always uses `lf-storage/queues/jobs.json` (and `lf-storage/queues/failed.json`). Every queue shares one file, filtered by a `queue` field per record.
 
-This same resolution logic lives in two places, kept deliberately in sync: `bin/worker` (for the worker process) and `Laika\Cli\QueueResolver` (for the `queue:*` commands and your own dispatch code).
+This same resolution logic lives in two places, kept deliberately in sync: `bin/worker` (for the worker process) and `Laika\Core\Worker\Queue` (for the `queue:*` commands and your own dispatch code).
 
 ---
 
@@ -258,12 +272,12 @@ $driver->push(new SendWelcomeEmail($id), 'emails');  // -> 'emails'
 
 ### Inside the framework (recommended)
 
-`Laika\Cli\QueueResolver` builds whichever driver `lf-config/queue.php` names, so your dispatch code doesn't hardcode a backend and doesn't drift from the worker's choice:
+`Laika\Core\Worker\Queue` builds whichever driver `lf-config/queue.php` names, so your dispatch code doesn't hardcode a backend and doesn't drift from the worker's choice:
 
 ```php
-use Laika\Cli\QueueResolver;
+use Laika\Core\Worker\Queue;
 
-$driver = QueueResolver::driver();
+$driver = Queue::driver();
 
 // push(Job $job, string $queue = 'default', int $delay = 0): string
 $id = $driver->push(new SendWelcomeEmail($userId), 'emails');
@@ -272,7 +286,9 @@ $id = $driver->push(new SendWelcomeEmail($userId), 'emails');
 $driver->push(new SendWelcomeEmail($userId), 'emails', 10);
 ```
 
-`QueueResolver` ships in `laikait/laika-cli`, a hard dependency of `laikait/laika-core`, so it's always available in a Laika app — web requests included, not just CLI. It also calls `ensureSchema()` for you when the driver is `database`.
+`Queue` ships in `laikait/laika-core`, so it's always available in a Laika app — web requests included, not just CLI.
+
+> `Laika\Cli\QueueResolver` is the former home of this API and still works, delegating to `Queue` with the CLI's historical `database` default. Prefer `Queue` in new code.
 
 ### Constructing a driver directly
 
@@ -284,11 +300,10 @@ use Laika\Queue\Driver\DatabaseDriver;
 
 Connection::add(config('database', 'default'));
 $driver = new DatabaseDriver('default'); // a connection NAME, not a PDO instance
-$driver->ensureSchema();
 $driver->push(new SendWelcomeEmail($userId), 'emails');
 ```
 
-`DatabaseDriver` never opens PDO itself — it refers to a connection by name from [laika-model](https://github.com/laikait/laika-model)'s registry. Register the connection first.
+`DatabaseDriver` never opens PDO itself — it refers to a connection by name from [laika-model](https://github.com/laikait/laika-model)'s registry. Register the connection first, and make sure the tables exist ([Schema & migrations](#schema--migrations)) — the driver no longer creates them.
 
 ### The driver interface
 
@@ -334,7 +349,7 @@ Eight commands ship with `laikait/laika-cli` for this package.
 Notes:
 
 - **`queue:work`** is a thin proxy — it shells out to the root `worker` executable (falling back to `vendor/laikait/laika-queue/bin/worker`) so it can never drift from the real worker's driver selection, signal handling, or memory logic. `php worker default` and `php laika queue:work default` do the same thing.
-- **`queue:retry`** resets `$job->tries = 0` before re-pushing. Without that, a job whose payload already carries an exhausted attempt count would fail permanently on its very next run under `RedisDriver`, which increments the payload's own counter rather than reading a stored column. It also registers trusted classes first, same as the worker.
+- **`queue:retry`** resets `$job->tries = 0` before re-pushing, so a payload carrying an exhausted attempt count can't fail permanently on its very next run. Under `RedisDriver` this is now belt-and-braces — attempts live server-side in the `:attempts` hash and `push()` clears that field, so a re-push already starts from a clean count. It also registers trusted classes first, same as the worker.
 - **`queue:flush`** asks for confirmation before deleting.
 
 ---
@@ -343,13 +358,15 @@ Notes:
 
 | Driver | Storage | Concurrency | Use when |
 | --- | --- | --- | --- |
-| `JsonDriver` | `lf-storage/queues/jobs.json` | `flock`, but see caveat | Local/dev, zero setup |
+| `JsonDriver` | `lf-storage/queues/jobs.json` | `flock` — safe on a local filesystem | Local/dev, zero setup |
 | `DatabaseDriver` | [laika-model](https://github.com/laikait/laika-model) (PDO) | No row lock, see caveat | You already have a database and want durability |
 | `RedisDriver` | phpredis | Atomic — safe for multiple workers | Throughput, multiple concurrent workers |
 
 ### `RedisDriver`
 
-The only driver genuinely safe for concurrent workers. `pop()` is a Lua script, so claiming a job is atomic. It keeps four keys per queue — `:pending` (list), `:delayed` (sorted set), `:reserved` (sorted set), `:jobs` (hash of payloads) — and every `pop()` first migrates due delayed jobs into pending, then sweeps reserved jobs older than 90 seconds back into pending. That sweep is what makes it self-healing when a worker dies mid-job.
+The throughput choice, and safe for concurrent workers: `pop()` is a Lua script, so claiming a job is atomic. It keeps six keys per queue — `:pending` (list), `:delayed` (sorted set), `:reserved` (sorted set), `:jobs` (hash of payloads), `:attempts` (hash of per-job delivery counts) and `:dead` (sorted set) — and every `pop()` first migrates due delayed jobs into pending, then sweeps reserved jobs older than `reserve_timeout` back into pending. That sweep is what makes it self-healing when a worker dies mid-job.
+
+The sweep doesn't requeue forever. Each reclaim checks the job's `:attempts` count, and once it reaches `max_tries` the job is moved to `:dead` instead of back onto pending — so a job that reliably kills its worker stops cycling. Its payload stays in `:jobs` for inspection; nothing prunes `:dead` automatically.
 
 Build it with `RedisDriver::fromConfig()` rather than handing it an open `Redis` instance if it'll run inside a forking worker — see [`ReconnectableDriver`](#the-worker). Requires `ext-redis`.
 
@@ -359,7 +376,7 @@ Queries through `Laika\Queue\Model\QueueModel` using laika-model's portable quer
 
 ### `JsonDriver`
 
-One JSON array of records in a single file, guarded by `flock()` on every read-modify-write. Fine for development, not intended for production. Note it depends on the framework globals `APP_PATH` and `setPermission()`, so unlike the other two it **cannot** be used outside a Laika app.
+One JSON array of records in a single file. Every read-modify-write goes through `Laika\Core\Storage\JsonStorage::mutate()`, which holds a single `flock(LOCK_EX)` across the whole read → mutate → write, so two workers can't claim the same job. Fine for development, not intended for production. Note it depends on `APP_PATH` and on `JsonStorage` itself, so unlike the other two it **cannot** be used outside a Laika app.
 
 ---
 
@@ -449,19 +466,25 @@ Two tables, created only when you use a `database` driver.
 
 **`laika_failed_jobs`** — `id` (char 36, PK), `queue` (string 100), `payload` (longtext), `exception` (text), `failed_at` (uint), indexed on `queue`.
 
-There are three ways to get them:
+> **The tables are not created for you.** Earlier versions had the driver and
+> the failed-job provider create their own tables on construction via
+> `ensureSchema()`. That method is gone — run the migration once before the
+> first worker start, or `push()` will fail against a missing table.
 
-**1. Automatic (usual).** Whenever `driver` or `failed_driver` resolves to `database`, both `bin/worker` and `QueueResolver` call `ensureSchema()` right after constructing the class. Tables appear on first run — no migrate step needed.
+There are two ways to get them:
 
-**2. `php laika app:migrate`.** The package declares its models and schemas under `extra.laika.resources` in its `composer.json`:
+**1. `php laika app:migrate` (usual).** The package declares its models and schemas under `extra.laika.resources` in its `composer.json`:
 
 ```json
 "extra": {
     "laika": {
         "resources": {
             "models":  { "path": "src/Model",  "namespace": "Laika\\Queue\\Model" },
-            "schemas": { "path": "src/Schema", "namespace": "Laika\\Queue\\Schema",
-                         "contract": "Laika\\Model\\Contract\\SchemaAbstract" }
+            "schemas": {
+                "path": "src/Schema",
+                "namespace": "Laika\\Queue\\Schema",
+                "contract": "Laika\\Model\\Contract\\SchemaAbstract"
+                }
         }
     }
 }
@@ -469,7 +492,7 @@ There are three ways to get them:
 
 The framework's resource loader reads that from installed packages, so `app:migrate` discovers `QueueModelSchema` and `FailedJobModelSchema` alongside your own `lf-app/Schema` classes — no wiring on your side. `php laika schema:list` and `php laika resource:list` will show them.
 
-**3. By hand.**
+**2. By hand.** The route to use outside a Laika app, where there's no `laika` executable:
 
 ```php
 use Laika\Queue\Schema\QueueModelSchema;
@@ -479,9 +502,9 @@ use Laika\Queue\Schema\FailedJobModelSchema;
 (new FailedJobModelSchema('default'))->up();
 ```
 
-All three are idempotent — `createIfNotExists()` underneath, safe to call on every boot.
+Both are idempotent — `createIfNotExists()` underneath, safe to call on every boot.
 
-Both schema classes extend `Laika\Model\Contract\SchemaAbstract` and use `Laika\Model\Schema\Schema` / `Blueprint`, so **schema creation needs `laikait/laika-model`**, not `laika-core`. They're plain PSR-4 files, lazily autoloaded only when something references them: constructing a driver never touches them, only `ensureSchema()` and `app:migrate` do.
+Both schema classes extend `Laika\Model\Contract\SchemaAbstract` and use `Laika\Model\Schema\Schema` / `Blueprint`, so **schema creation needs `laikait/laika-model`**, not `laika-core`. They're plain PSR-4 files, lazily autoloaded only when something references them — and since nothing in the drivers touches them any more, that means `app:migrate` or the explicit calls above, nothing else.
 
 The models themselves (`QueueModel`, `FailedJobModel`) are ordinary `Laika\Model\Model` subclasses with the usual `$table` / `$id` / `$connection` convention — query them directly if you want your own dashboard.
 
@@ -502,6 +525,7 @@ autorestart=true
 numprocs=1
 stopsignal=TERM
 stopwaitsecs=70
+; Debian/Ubuntu default — change it, see "Which user?" below
 user=www-data
 redirect_stderr=true
 stdout_logfile=/var/log/laika-queue-worker.log
@@ -521,6 +545,7 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=70
+# Debian/Ubuntu default — change it, see "Which user?" below
 User=www-data
 
 [Install]
@@ -531,11 +556,59 @@ Set `stopwaitsecs` / `TimeoutStopSec` comfortably above your longest job timeout
 
 For several queues, add one program block per queue name rather than raising `numprocs` — and read the caveat below before raising `numprocs` at all.
 
+### Which user?
+
+`www-data` above is **not** created by Laika, and it isn't universal — it's the account the Debian/Ubuntu
+packages give Apache, nginx and PHP-FPM. Elsewhere it's called something else:
+
+| Platform | Usual user |
+| --- | --- |
+| Debian, Ubuntu | `www-data` |
+| RHEL, CentOS, Rocky, Alma, Fedora | `apache` (httpd) or `nginx` |
+| Arch | `http` |
+| Alpine | `nginx` or `apache` |
+| FreeBSD | `www` |
+| cPanel, Plesk, most shared hosting | **your account name** — each account runs as itself |
+
+Find yours rather than guessing:
+
+```bash
+ps -o user= -C php-fpm | sort -u        # PHP-FPM pool user
+ps -o user= -C nginx,httpd,apache2 | sort -u
+```
+
+or from inside the app: `posix_getpwuid(posix_geteuid())['name']`.
+
+**Run the worker as whatever user owns the project files.** This is not cosmetic. The worker writes
+`lf-storage/` — the JSON driver's `jobs.json` and `failed.json` especially, which the web process reads and
+writes too. Get the user wrong and you end up with files the web server can't touch, or vice versa: jobs
+silently failing to enqueue, or a `Permission denied` the first time a request tries to push.
+
+### Shared hosting
+
+On most shared hosting you have no root, so **neither supervisor nor systemd is available** and the `User=`
+line is moot — everything already runs as your account. Check what your panel offers first; many expose a
+"background worker", "daemon", or long-running process feature that does the same job.
+
+Failing that, a cron watchdog restarts the worker whenever it isn't running. The worker exits on its own
+memory threshold, so something has to bring it back:
+
+```cron
+* * * * * pgrep -f "worker default" >/dev/null 2>&1 || cd /home/youruser/app && php worker default >> lf-storage/worker.log 2>&1 &
+```
+
+Note this is a *watchdog*, not a per-minute run — `bin/worker` takes only a queue name and loops until it's
+signalled or hits the memory ceiling; there's no `--once` or max-jobs flag to make it exit after a batch.
+Match the `pgrep` pattern to the queue name so one watchdog line per queue doesn't restart the wrong worker.
+
+If your host kills long-running processes outright — some do — the queue isn't a good fit there; dispatch to
+an external worker instead.
+
 ---
 
 ## Concurrency caveat
 
-**`DatabaseDriver::pop()` and `JsonDriver::pop()` have no row lock.**
+**`DatabaseDriver::pop()` has no row lock.**
 
 `DatabaseDriver` claims a job with a plain `SELECT` (filtered to unreserved, due rows) followed by an `UPDATE`, both inside a transaction, entirely through laika-model's portable query builder. There's no `FOR UPDATE` / `SKIP LOCKED` or equivalent, because those aren't portable across the seven backends laika-model targets.
 
@@ -548,7 +621,10 @@ This matters only if you run more than one worker on the same queue. Your option
 - **Use `RedisDriver`**, whose Lua-scripted `pop()` is atomic.
 - **Add a locking clause to `pop()` yourself** for your specific database.
 
-`RedisDriver` is unaffected.
+`RedisDriver` and `JsonDriver` are unaffected — the former claims jobs in a Lua script, the latter under a
+single `flock(LOCK_EX)` spanning its whole read-modify-write. The `flock` guarantee holds on a local
+filesystem; it is unreliable on NFS and some other network filesystems, so don't put `jobs.json` on a share
+and expect it to arbitrate between hosts.
 
 ---
 
@@ -575,9 +651,9 @@ Do it once at bootstrap, before any `pop()`. Calls are additive and de-duplicate
 
 ## Known gaps
 
-- **No stalled-job reaper for `DatabaseDriver`/`JsonDriver`.** A worker killed mid-job leaves `reserved_at` set forever, and that job is never picked up again. `RedisDriver::pop()` self-heals via its 90-second reserved sweep; a cron-callable `reapStalled()` for the other two is the obvious next addition.
+- **No stalled-job reaper for `DatabaseDriver`/`JsonDriver`.** A worker killed mid-job leaves `reserved_at` set forever, and that job is never picked up again. `RedisDriver::pop()` self-heals via its reserved sweep (`reserve_timeout`, default 90s); a cron-callable `reapStalled()` for the other two is the obvious next addition.
 - **`DatabaseDriver::pop()` has no locking clause** — see [Concurrency caveat](#concurrency-caveat).
-- **No `QueueRelay` / `QueueServiceProvider`.** There's no facade in `Laika\Service` yet; use `Laika\Cli\QueueResolver` as shown in [Dispatching jobs](#dispatching-jobs).
+- **No `QueueRelay` / `QueueServiceProvider`.** There's no facade in `Laika\Service` yet; use `Laika\Core\Worker\Queue` as shown in [Dispatching jobs](#dispatching-jobs).
 - **`Job::$delay` and `Job::$queue` are not honoured by `push()`** — pass both as arguments instead. See [Two traps](#two-traps-worth-knowing).
 - **No batching, chaining, or unique-job support.**
 
@@ -592,8 +668,8 @@ The package works without the Laika framework, with limits:
 | `Job`, `Worker`, `QueueDriverInterface` | Yes — no framework dependency |
 | `RedisDriver` | Yes — needs `ext-redis` only |
 | `DatabaseDriver`, `DatabaseFailedJobProvider` | Yes — needs `laikait/laika-model` |
-| `ensureSchema()`, the `Schema` classes | Yes — needs `laikait/laika-model` |
-| `JsonDriver`, `JsonFailedJobProvider` | **No** — depends on the `APP_PATH` constant and the `setPermission()` global |
+| The `Schema` classes | Yes — needs `laikait/laika-model`; call them yourself, there's no `app:migrate` outside a Laika app |
+| `JsonDriver`, `JsonFailedJobProvider` | **No** — depend on the `APP_PATH` constant and on `Laika\Core\Storage\JsonStorage` |
 | `bin/worker`, `queue:*` / `job:*` commands | **No** — require a Laika app (`lf-boot/app.php`) |
 | Auto-registered trusted classes | **No** — call `Job::registerTrustedClasses()` yourself |
 
@@ -604,6 +680,8 @@ use Laika\Model\Connection;
 use Laika\Queue\Abstracts\Job;
 use Laika\Queue\Driver\DatabaseDriver;
 use Laika\Queue\Driver\DatabaseFailedJobProvider;
+use Laika\Queue\Schema\QueueModelSchema;
+use Laika\Queue\Schema\FailedJobModelSchema;
 use Laika\Queue\Worker;
 
 Connection::add([
@@ -616,10 +694,12 @@ Connection::add([
 
 Job::registerTrustedClasses([SendWelcomeEmail::class]);
 
+// No laika executable out here, so create the tables directly (idempotent)
+(new QueueModelSchema('default'))->up();
+(new FailedJobModelSchema('default'))->up();
+
 $driver = new DatabaseDriver('default');
 $failer = new DatabaseFailedJobProvider('default');
-$driver->ensureSchema();
-$failer->ensureSchema();
 
 $driver->push(new SendWelcomeEmail($userId), 'emails', 10);
 

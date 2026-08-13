@@ -63,8 +63,7 @@ require APP_PATH . '/lf-boot/app.php';
 // Apply the framework's CLI memory ceiling (lf-inc/const.php's
 // CLI_MEMORY_LIMIT) to this process's actual memory_limit ini setting.
 // Optional: only laika-core ships MemoryManager, and this script otherwise
-// has no hard dependency on it — same lazy-reference pattern as
-// DatabaseDriver::ensureSchema() below.
+// has no hard dependency on it, so it's referenced lazily.
 if (class_exists(\Laika\Core\System\MemoryManager::class)) {
     (new \Laika\Core\System\MemoryManager())->apply();
 }
@@ -96,12 +95,8 @@ switch ($driverName) {
         }
 
         // Connects using the app's existing lf-config/redis.php as-is — no
-        // separate queue.redis config to keep in sync with it.
-        $redisConfig = [
-            'host' => config('redis', 'host', '127.0.0.1'),
-            'port' => config('redis', 'port', 6379),
-            'auth' => config('redis', 'password') ?: null,
-        ];
+        // separate queue.redis config to keep in sync with it. RedisConnection
+        // reads those keys itself, so nothing needs mapping here.
 
         // Namespaced under redis.php's own prefix + ':queue' so queue keys
         // (pending/delayed/reserved/jobs) can't collide with cache/session
@@ -110,7 +105,7 @@ switch ($driverName) {
 
         // fromConfig() (not a raw Redis instance) so Worker's forked children
         // reconnect() with their own socket instead of sharing the parent's.
-        $driver = RedisDriver::fromConfig($redisConfig, $prefix);
+        $driver = RedisDriver::fromConfig([], $prefix);
         break;
 
     case 'json':
@@ -129,8 +124,8 @@ switch ($driverName) {
         // immediately instead of on first query, and keeps this script
         // explicit about where its connection comes from.
         Connection::add(config('database', $connection));
+        // DatabaseDriver's constructor ensures its own schema.
         $driver = new DatabaseDriver($connection);
-        $driver->ensureSchema();
         break;
 }
 
@@ -145,8 +140,8 @@ if ($failedDriverName === 'database') {
     if ($driverName !== 'database') {
         Connection::add(config('database', $connection));
     }
+    // Tables come from `php laika app:migrate` — see extra.laika.resources
     $failer = new DatabaseFailedJobProvider($connection);
-    $failer->ensureSchema();
 } else {
     $failer = new JsonFailedJobProvider();
 }
