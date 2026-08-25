@@ -33,14 +33,15 @@ composer require laikait/laika-queue
 
 Inside a Laika app you normally get it already — `laikait/laika-core` depends on it.
 
-Installing generates a `worker` executable in your project root (plus `worker.bat` on Windows), so the entry point always matches the version in `vendor/`:
+Installing generates a single `worker` executable in your project root — the same file on every platform — so the entry point always matches the version in `vendor/`:
 
 | File | Platform | How you run it |
 | --- | --- | --- |
 | `worker` | all | `php worker default` — or `./worker default` on Linux/macOS |
-| `worker.bat` | Windows only | `worker default` in cmd, `.\worker default` in PowerShell |
 
-Both are thin proxies into `vendor/laikait/laika-queue/bin/worker`. They're rewritten only when their contents actually change, and regenerate if you delete them.
+It is a thin proxy into `vendor/laikait/laika-queue/bin/worker`. It's rewritten only when its contents actually change, and regenerates if you delete it.
+
+> **Windows:** run it as `php worker ...`, not a bare `worker ...`. There is deliberately no `worker.bat` shim — cmd and PowerShell resolve commands through `PATHEXT` and will never execute an extensionless file. A `worker.bat` left over from an earlier version is deleted on the next `composer install`.
 
 Generation is driven by `Laika\Queue\ScriptHandler::generate`. Composer only runs scripts declared by the **root** project, never by a dependency, so a project not created from the framework skeleton needs to wire it itself:
 
