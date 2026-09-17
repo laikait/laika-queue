@@ -2,9 +2,11 @@
 
 namespace Laika\Queue\Driver;
 
-use Laika\Queue\Interfaces\QueueDriverInterface;
 use Laika\Queue\Abstracts\Job;
 use Laika\Queue\Model\QueueModel;
+use Laika\Queue\Schema\QueueModelSchema;
+use Laika\Queue\Exceptions\DriverException;
+use Laika\Queue\Interfaces\QueueDriverInterface;
 
 /**
  * Queue driver backed by laika-model (see laikait/laika-model) via QueueModel.
@@ -27,14 +29,39 @@ use Laika\Queue\Model\QueueModel;
 class DatabaseDriver implements QueueDriverInterface
 {
     protected QueueModel $model;
-    protected string $connection;
+    protected string $connection = 'default';
 
-    public function __construct(string $connection = 'default')
+    public function __construct(?string $connection = null)
     {
-        $this->connection = $connection;
+        if (is_string($connection)) {
+            $this->connection = match(true) {
+                preg_match('/^[a-z]+$/i', $connection)  =>  strtolower($connection),
+                default                                 =>  throw new DriverException(
+                    "Invalid connection name [{$connection}]!"
+                    )
+            };
+        }
         $this->model = new QueueModel($connection);
     }
 
+    /**
+     * Install Database Driver
+     * @return void
+     */
+    public function install(): void
+    {
+        $schema = new QueueModelSchema($this->connection);
+        $schema->down();
+        $schema->up();
+    }
+
+    /**
+     * Push Job
+     * @param Job $job Job to push
+     * @param string $queue Queue
+     * @param int $delay Queue delay. Defaul is 0.
+     * @return string
+     */
     public function push(Job $job, string $queue = 'default', int $delay = 0): string
     {
         $job->id = $job->id ?: bin2hex(random_bytes(16));
@@ -54,6 +81,11 @@ class DatabaseDriver implements QueueDriverInterface
         return $job->id;
     }
 
+    /**
+     * Pop queue jobs
+     * @param string $queue Queue
+     * @return ?Job
+     */
     public function pop(string $queue = 'default'): ?Job
     {
         return $this->model->transaction(function (QueueModel $model) use ($queue) {
@@ -85,11 +117,24 @@ class DatabaseDriver implements QueueDriverInterface
         });
     }
 
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
     public function ack(string $id, string $queue = 'default'): void
     {
         $this->delete($id, $queue);
     }
 
+    /**
+     * Release a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @param int $delay Queue delay. Default is 0.
+     * @return void
+     */
     public function release(string $id, string $queue = 'default', int $delay = 0): void
     {
         $this->model
@@ -101,14 +146,24 @@ class DatabaseDriver implements QueueDriverInterface
             ]);
     }
 
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
     public function delete(string $id, string $queue = 'default'): void
     {
         $this->model
-            ->where(['id' => $id])
-            ->where(['queue' => $queue])
+            ->where(['id' => $id, 'queue' => $queue])
             ->delete();
     }
 
+    /**
+     * Size of Queue
+     * @param string $queue Queue. Default is 'default'
+     * @return int
+     */
     public function size(string $queue = 'default'): int
     {
         return $this->model

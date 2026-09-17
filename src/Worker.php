@@ -14,6 +14,29 @@ class Worker
     protected bool $shouldQuit = false;
     protected bool $paused = false;
 
+    /** @var callable[] Run before every job, see beforeJob() */
+    protected static array $beforeJob = [];
+
+    /**
+     * Run a Callback Before Every Job
+     *
+     * Static because the host registers it while booting, before any Worker is
+     * built. This package requires nothing but PHP, so it cannot reset the
+     * host's per-process caches itself -- this is the seam the host uses.
+     *
+     * Without pcntl every job runs in this one long-lived process, and anything
+     * a job leaves in a static cache -- config, options -- is what the next job
+     * reads. With pcntl the reset runs in the parent before forking, so each
+     * child starts from it.
+     *
+     * @param callable $callback
+     * @return void
+     */
+    public static function beforeJob(callable $callback): void
+    {
+        static::$beforeJob[] = $callback;
+    }
+
     public function __construct(QueueDriverInterface $driver, ?FailedJobProviderInterface $failer = null)
     {
         $this->driver = $driver;
@@ -66,6 +89,15 @@ class Worker
 
     protected function runJob(Job $job, string $queue, int $timeout): void
     {
+        foreach (static::$beforeJob as $callback) {
+            try {
+                $callback($job, $queue);
+            } catch (\Throwable $e) {
+                // A failing reset must not take the worker down with it
+                fwrite(STDERR, "[laika-queue] beforeJob callback failed: {$e->getMessage()}\n");
+            }
+        }
+
         if (!extension_loaded('pcntl')) {
             $this->process($job, $queue);
             return;

@@ -16,16 +16,15 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         $this->store = new JsonStorage(APP_PATH . '/lf-storage/queues');
     }
 
-    /**
-     * Run $fn against failed.json under one exclusive lock.
-     * The callback returns ['records' => …] to write, 'return' => … to hand back.
-     * Omitting 'records' skips the write entirely.
-     */
-    protected function withLock(callable $fn): mixed
-    {
-        return $this->store->mutate('failed', $fn);
-    }
+    public function install(): void {}
 
+    /**
+     * Log Failed queue
+     * @param string $queue Queue
+     * @param string $payload Log payload
+     * @param string $payload Log payload
+     * @param Throwable $e Throwable object
+     */
     public function log(string $queue, string $payload, \Throwable $e): string
     {
         $id = bin2hex(random_bytes(16));
@@ -42,6 +41,11 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         });
     }
 
+    /**
+     * Get all logs
+     * @param ?string $queue Queue name. Default is null
+     * @return array
+     */
     public function all(?string $queue = null): array
     {
         return $this->withLock(function (array $records) use ($queue) {
@@ -52,6 +56,11 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         });
     }
 
+    /**
+     * Find Queue by ID
+     * @param string $id Queue ID
+     * @return ?array
+     */
     public function find(string $id): ?array
     {
         return $this->withLock(function (array $records) use ($id) {
@@ -66,6 +75,11 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         });
     }
 
+    /**
+     * Forget Queue by ID
+     * @param string $id Queue ID
+     * @return bool
+     */
     public function forget(string $id): bool
     {
         return $this->withLock(function (array $records) use ($id) {
@@ -75,6 +89,11 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
         });
     }
 
+    /**
+     * Flush queue
+     * @param ?int $hours Hours. Example: 1
+     * @return void
+     */
     public function flush(?int $hours = null): void
     {
         $this->withLock(function (array $records) use ($hours) {
@@ -85,5 +104,18 @@ class JsonFailedJobProvider implements FailedJobProviderInterface
             $records = array_values(array_filter($records, fn($r) => $r['failed_at'] > $cutoff));
             return ['records' => $records];
         });
+    }
+
+    ####################################################################################
+    /*================================= INTERNAL API =================================*/
+    ####################################################################################
+    /**
+     * Run $fn against failed.json under one exclusive lock.
+     * The callback returns ['records' => …] to write, 'return' => … to hand back.
+     * Omitting 'records' skips the write entirely.
+     */
+    protected function withLock(callable $fn): mixed
+    {
+        return $this->store->mutate('failed', $fn);
     }
 }
