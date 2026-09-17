@@ -141,6 +141,123 @@ class RedisDriver implements QueueDriverInterface, ReconnectableDriver
         }
     }
 
+    public function install(): void {}
+
+    /**
+     * Push Job
+     * @param Job $job Job to push
+     * @param string $queue Queue
+     * @param int $delay Queue delay. Defaul is 0.
+     * @return string
+     */
+    public function push(Job $job, string $queue = 'default', int $delay = 0): string
+    {
+        $job->id = $job->id ?: bin2hex(random_bytes(16));
+        $job->queue = $queue;
+
+        $target = $delay > 0 ? $this->delayedKey($queue) : $this->pendingKey($queue);
+        $score  = $delay > 0 ? (string) (time() + $delay) : '';
+
+        $this->redis->eval(self::PUSH_SCRIPT, [
+            $this->jobsKey($queue), $target, $this->attemptsKey($queue),
+            $job->id, $job->serializePayload(), $score,
+        ], 3);
+
+        return $job->id;
+    }
+
+    /**
+     * Pop queue jobs
+     * @param string $queue Queue
+     * @return ?Job
+     */
+    public function pop(string $queue = 'default'): ?Job
+    {
+        $this->migrateDelayed($queue);
+        $this->reapStalled($queue);
+
+        $result = $this->redis->eval(self::POP_SCRIPT, [
+            $this->pendingKey($queue), $this->reservedKey($queue), $this->jobsKey($queue),
+        ], 3);
+
+        if (!$result) {
+            return null;
+        }
+
+        [$id, $payload] = $result;
+
+        // Attempts live in Redis so a reclaim by another worker still counts
+        $tries = (int) $this->redis->hIncrBy($this->attemptsKey($queue), $id, 1);
+
+        $job = Job::unserializePayload($payload);
+        $job->id = $id;
+        $job->queue = $queue;
+        $job->tries = $tries;
+
+        return $job;
+    }
+
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
+    public function ack(string $id, string $queue = 'default'): void
+    {
+        $this->redis->multi()
+            ->zRem($this->reservedKey($queue), $id)
+            ->hDel($this->jobsKey($queue), $id)
+            ->hDel($this->attemptsKey($queue), $id)
+            ->exec();
+    }
+
+    /**
+     * Release a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @param int $delay Queue delay. Default is 0.
+     * @return void
+     */
+    public function release(string $id, string $queue = 'default', int $delay = 0): void
+    {
+        $pipe = $this->redis->multi()->zRem($this->reservedKey($queue), $id);
+        if ($delay > 0) {
+            $pipe->zAdd($this->delayedKey($queue), time() + $delay, $id);
+        } else {
+            $pipe->rPush($this->pendingKey($queue), $id);
+        }
+        $pipe->exec();
+    }
+
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
+    public function delete(string $id, string $queue = 'default'): void
+    {
+        $this->ack($id, $queue);
+    }
+
+    /**
+     * Size of Queue
+     * @param string $queue Queue. Default is 'default'
+     * @return int
+     */
+    public function size(string $queue = 'default'): int
+    {
+        // Matches DatabaseDriver/JsonDriver semantics: every unreserved job,
+        // including ones delayed into the future — not just immediately
+        // available ones.
+        return $this->redis->lLen($this->pendingKey($queue))
+            + $this->redis->zCard($this->delayedKey($queue));
+    }
+
+    ##################################################################################
+    /*================================ INTERNAL API ================================*/
+    ##################################################################################
     protected function pendingKey(string $queue): string
     {
         return "{$this->prefix}:{$queue}:pending";
@@ -171,22 +288,6 @@ class RedisDriver implements QueueDriverInterface, ReconnectableDriver
         return "{$this->prefix}:{$queue}:dead";
     }
 
-    public function push(Job $job, string $queue = 'default', int $delay = 0): string
-    {
-        $job->id = $job->id ?: bin2hex(random_bytes(16));
-        $job->queue = $queue;
-
-        $target = $delay > 0 ? $this->delayedKey($queue) : $this->pendingKey($queue);
-        $score  = $delay > 0 ? (string) (time() + $delay) : '';
-
-        $this->redis->eval(self::PUSH_SCRIPT, [
-            $this->jobsKey($queue), $target, $this->attemptsKey($queue),
-            $job->id, $job->serializePayload(), $score,
-        ], 3);
-
-        return $job->id;
-    }
-
     protected function migrateDelayed(string $queue): void
     {
         $this->redis->eval(self::MIGRATE_SCRIPT, [
@@ -209,65 +310,5 @@ class RedisDriver implements QueueDriverInterface, ReconnectableDriver
     protected function maxTries(): int
     {
         return (int) config('queue', 'max_tries', 3);
-    }
-
-    public function pop(string $queue = 'default'): ?Job
-    {
-        $this->migrateDelayed($queue);
-        $this->reapStalled($queue);
-
-        $result = $this->redis->eval(self::POP_SCRIPT, [
-            $this->pendingKey($queue), $this->reservedKey($queue), $this->jobsKey($queue),
-        ], 3);
-
-        if (!$result) {
-            return null;
-        }
-
-        [$id, $payload] = $result;
-
-        // Attempts live in Redis so a reclaim by another worker still counts
-        $tries = (int) $this->redis->hIncrBy($this->attemptsKey($queue), $id, 1);
-
-        $job = Job::unserializePayload($payload);
-        $job->id = $id;
-        $job->queue = $queue;
-        $job->tries = $tries;
-
-        return $job;
-    }
-
-    public function ack(string $id, string $queue = 'default'): void
-    {
-        $this->redis->multi()
-            ->zRem($this->reservedKey($queue), $id)
-            ->hDel($this->jobsKey($queue), $id)
-            ->hDel($this->attemptsKey($queue), $id)
-            ->exec();
-    }
-
-    public function release(string $id, string $queue = 'default', int $delay = 0): void
-    {
-        $pipe = $this->redis->multi()->zRem($this->reservedKey($queue), $id);
-        if ($delay > 0) {
-            $pipe->zAdd($this->delayedKey($queue), time() + $delay, $id);
-        } else {
-            $pipe->rPush($this->pendingKey($queue), $id);
-        }
-        $pipe->exec();
-    }
-
-    public function delete(string $id, string $queue = 'default'): void
-    {
-        $this->ack($id, $queue);
-    }
-
-    public function size(string $queue = 'default'): int
-    {
-        // Matches DatabaseDriver/JsonDriver semantics: every unreserved job,
-        // including ones delayed into the future — not just immediately
-        // available ones.
-        return $this->redis->lLen($this->pendingKey($queue))
-            + $this->redis->zCard($this->delayedKey($queue));
     }
 }

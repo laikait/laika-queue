@@ -123,8 +123,12 @@ switch ($driverName) {
         // QueueModel; adding it here upfront just makes the failure surface
         // immediately instead of on first query, and keeps this script
         // explicit about where its connection comes from.
-        Connection::add(config('database', $connection));
-        // DatabaseDriver's constructor ensures its own schema.
+        // Registered under its own name: an unnamed add() lands on the default
+        // name, so queue.connection = 'analytics' used to overwrite 'default'.
+        if (!Connection::has($connection)) {
+            Connection::add(config('database', $connection), $connection);
+        }
+        // Tables come from `php laika app:migrate` — see extra.laika.resources
         $driver = new DatabaseDriver($connection);
         break;
 }
@@ -137,8 +141,8 @@ switch ($driverName) {
 $failedDriverName = strtolower((string) config('queue', 'failed_driver', $driverName === 'database' ? 'database' : 'json'));
 
 if ($failedDriverName === 'database') {
-    if ($driverName !== 'database') {
-        Connection::add(config('database', $connection));
+    if (!Connection::has($connection)) {
+        Connection::add(config('database', $connection), $connection);
     }
     // Tables come from `php laika app:migrate` — see extra.laika.resources
     $failer = new DatabaseFailedJobProvider($connection);

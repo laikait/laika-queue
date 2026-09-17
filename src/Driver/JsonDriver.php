@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Laika\Queue\Driver;
 
+use Laika\Queue\Abstracts\Job;
 use Laika\Core\Storage\JsonStorage;
 use Laika\Queue\Interfaces\QueueDriverInterface;
-use Laika\Queue\Abstracts\Job;
 
 /**
  * Flat-file queue driver — good for local/dev, no external service needed.
@@ -27,6 +27,8 @@ class JsonDriver implements QueueDriverInterface
         $this->store = new JsonStorage(APP_PATH . '/lf-storage/queues');
     }
 
+    public function install(): void {}
+
     /**
      * Run $fn against jobs.json under one exclusive lock.
      * The callback returns ['records' => …] to write, 'return' => … to hand back.
@@ -37,6 +39,13 @@ class JsonDriver implements QueueDriverInterface
         return $this->store->mutate('jobs', $fn);
     }
 
+    /**
+     * Push Job
+     * @param Job $job Job to push
+     * @param string $queue Queue
+     * @param int $delay Queue delay. Defaul is 0.
+     * @return string
+     */
     public function push(Job $job, string $queue = 'default', int $delay = 0): string
     {
         $job->id = $job->id ?: bin2hex(random_bytes(16));
@@ -57,6 +66,11 @@ class JsonDriver implements QueueDriverInterface
         });
     }
 
+    /**
+     * Pop queue jobs
+     * @param string $queue Queue
+     * @return ?Job
+     */
     public function pop(string $queue = 'default'): ?Job
     {
         return $this->withLock(function (array $records) use ($queue) {
@@ -82,11 +96,24 @@ class JsonDriver implements QueueDriverInterface
         });
     }
 
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
     public function ack(string $id, string $queue = 'default'): void
     {
         $this->delete($id, $queue);
     }
 
+    /**
+     * Release a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @param int $delay Queue delay. Default is 0.
+     * @return void
+     */
     public function release(string $id, string $queue = 'default', int $delay = 0): void
     {
         $this->withLock(function (array $records) use ($id, $queue, $delay) {
@@ -102,6 +129,12 @@ class JsonDriver implements QueueDriverInterface
         });
     }
 
+    /**
+     * Delete a single queue
+     * @param string $id Queue job ID
+     * @param string $queue Queue. Default is 'default'
+     * @return void
+     */
     public function delete(string $id, string $queue = 'default'): void
     {
         $this->withLock(function (array $records) use ($id, $queue) {
@@ -113,6 +146,11 @@ class JsonDriver implements QueueDriverInterface
         });
     }
 
+    /**
+     * Size of Queue
+     * @param string $queue Queue. Default is 'default'
+     * @return int
+     */
     public function size(string $queue = 'default'): int
     {
         return $this->withLock(function (array $records) use ($queue) {

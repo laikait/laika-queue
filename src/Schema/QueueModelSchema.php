@@ -20,9 +20,12 @@ class QueueModelSchema extends SchemaAbstract
     /** @var string Database Connection Name */
     protected string $connection = 'default';
 
-    public function __construct(string $connection = 'default')
+    public function __construct(?string $connection = null)
     {
-        $this->connection = $connection;
+        // app:migrate passes nothing: follow lf-config/queue.php, so the table
+        // lands on the connection DatabaseDriver reads it from
+        $connection ??= function_exists('config') ? (string) config('queue', 'connection', 'default') : 'default';
+        parent::__construct($connection);
     }
 
     public function up(): void
