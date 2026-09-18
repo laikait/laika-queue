@@ -14,9 +14,9 @@ use Laika\Queue\Interfaces\QueueDriverInterface;
  * constructing this — the driver only refers to it by name, it never opens
  * PDO itself.
  *
- * The table isn't created here — run `php laika app:migrate` (which
- * discovers Laika\Queue\Schema\QueueModelSchema via helpers/loader.php), or
- * call Schema::on($connection)->createIfNotExists(...) yourself before use.
+ * The table isn't created here. Create it once with
+ * (new QueueModelSchema($connection))->up(), which is safe to repeat.
+ * install() also creates it, but drops any existing table first.
  *
  * pop() claims a row with a plain SELECT + UPDATE inside a transaction, no
  * locking clause (no FOR UPDATE / SKIP LOCKED) — this keeps it driver-agnostic

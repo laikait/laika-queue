@@ -125,7 +125,7 @@ return [
 ```
 
 Choosing `'database'` (or leaving `failed_driver` on `'database'`) needs its tables created once —
-`php laika app:migrate`. See [Schema & migrations](#schema--migrations).
+see [Schema & migrations](#schema--migrations).
 
 **4. Dispatch it** from a controller, service, anywhere:
 
@@ -472,40 +472,23 @@ Two tables, created only when you use a `database` driver.
 > `ensureSchema()`. That method is gone — run the migration once before the
 > first worker start, or `push()` will fail against a missing table.
 
-There are two ways to get them:
-
-**1. `php laika app:migrate` (usual).** The package declares its models and schemas under `extra.laika.resources` in its `composer.json`:
-
-```json
-"extra": {
-    "laika": {
-        "resources": {
-            "models":  { "path": "src/Model",  "namespace": "Laika\\Queue\\Model" },
-            "schemas": {
-                "path": "src/Schema",
-                "namespace": "Laika\\Queue\\Schema",
-                "contract": "Laika\\Model\\Contract\\SchemaAbstract"
-                }
-        }
-    }
-}
-```
-
-The framework's resource loader reads that from installed packages, so `app:migrate` discovers `QueueModelSchema` and `FailedJobModelSchema` alongside your own `lf-app/Schema` classes — no wiring on your side. `php laika schema:list` and `php laika resource:list` will show them.
-
-**2. By hand.** The route to use outside a Laika app, where there's no `laika` executable:
+Create them once, on the connection the driver uses:
 
 ```php
 use Laika\Queue\Schema\QueueModelSchema;
 use Laika\Queue\Schema\FailedJobModelSchema;
 
-(new QueueModelSchema('default'))->up();
-(new FailedJobModelSchema('default'))->up();
+(new QueueModelSchema())->up();        // laika_queue_jobs
+(new FailedJobModelSchema())->up();    // laika_failed_jobs
 ```
 
-Both are idempotent — `createIfNotExists()` underneath, safe to call on every boot.
+With no argument, both follow `queue.connection` from `lf-config/queue.php`; outside a Laika app they fall back to `'default'`, or pass a connection name. Both use `createIfNotExists()`, so running them again is safe.
 
-Both schema classes extend `Laika\Model\Contract\SchemaAbstract` and use `Laika\Model\Schema\Schema` / `Blueprint`, so **schema creation needs `laikait/laika-model`**, not `laika-core`. They're plain PSR-4 files, lazily autoloaded only when something references them — and since nothing in the drivers touches them any more, that means `app:migrate` or the explicit calls above, nothing else.
+`php laika app:migrate` does **not** create these tables. Since v1.1.1 the package no longer declares its models and schemas under `extra.laika.resources`, so the framework's resource loader does not see them.
+
+`DatabaseDriver::install()` and `DatabaseFailedJobProvider::install()` also create the tables, but **drop them first**, deleting every pending or failed job. Use them for a fresh install or a test, never on a live queue.
+
+Both schema classes extend `Laika\Model\Contract\SchemaAbstract` and use `Laika\Model\Schema\Schema` / `Blueprint`, so **schema creation needs `laikait/laika-model`**, not `laika-core`. They're plain PSR-4 files, lazily autoloaded only when something references them — and since nothing in the drivers touches them any more, that means the explicit calls above, nothing else.
 
 The models themselves (`QueueModel`, `FailedJobModel`) are ordinary `Laika\Model\Model` subclasses with the usual `$table` / `$id` / `$connection` convention — query them directly if you want your own dashboard.
 
@@ -669,7 +652,7 @@ The package works without the Laika framework, with limits:
 | `Job`, `Worker`, `QueueDriverInterface` | Yes — no framework dependency |
 | `RedisDriver` | Yes — needs `ext-redis` only |
 | `DatabaseDriver`, `DatabaseFailedJobProvider` | Yes — needs `laikait/laika-model` |
-| The `Schema` classes | Yes — needs `laikait/laika-model`; call them yourself, there's no `app:migrate` outside a Laika app |
+| The `Schema` classes | Yes — needs `laikait/laika-model`; call `up()` yourself, in or outside a Laika app |
 | `JsonDriver`, `JsonFailedJobProvider` | **No** — depend on the `APP_PATH` constant and on `Laika\Core\Storage\JsonStorage` |
 | `bin/worker`, `queue:*` / `job:*` commands | **No** — require a Laika app (`lf-boot/app.php`) |
 | Auto-registered trusted classes | **No** — call `Job::registerTrustedClasses()` yourself |

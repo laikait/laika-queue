@@ -128,7 +128,7 @@ switch ($driverName) {
         if (!Connection::has($connection)) {
             Connection::add(config('database', $connection), $connection);
         }
-        // Tables come from `php laika app:migrate` — see extra.laika.resources
+        // Tables are not created here: see QueueModelSchema / FailedJobModelSchema::up()
         $driver = new DatabaseDriver($connection);
         break;
 }
@@ -144,7 +144,7 @@ if ($failedDriverName === 'database') {
     if (!Connection::has($connection)) {
         Connection::add(config('database', $connection), $connection);
     }
-    // Tables come from `php laika app:migrate` — see extra.laika.resources
+    // Tables are not created here: see FailedJobModelSchema::up()
     $failer = new DatabaseFailedJobProvider($connection);
 } else {
     $failer = new JsonFailedJobProvider();
