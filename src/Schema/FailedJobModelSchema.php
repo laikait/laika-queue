@@ -7,10 +7,10 @@ use Laika\Model\Schema\Blueprint;
 use Laika\Model\Contract\SchemaAbstract;
 
 /**
- * Discovered by `php laika app:migrate` via the resource loader (see
- * helpers/loader.php). Requires laikait/laika-core — only autoloaded when
- * the framework's migrate command actually reaches for it, so laika-queue
- * itself does not need laika-core installed to function standalone.
+ * Not discovered by `php laika app:migrate`: call up() once to create the
+ * table. It uses createIfNotExists, so repeating it is safe. Requires
+ * laikait/laika-model, and is only autoloaded when something calls it, so
+ * laika-queue does not need laika-model to run the json or redis driver.
  */
 class FailedJobModelSchema extends SchemaAbstract
 {
@@ -22,7 +22,7 @@ class FailedJobModelSchema extends SchemaAbstract
 
     public function __construct(?string $connection = null)
     {
-        // app:migrate passes nothing: follow lf-config/queue.php, so the table
+        // No connection given: follow lf-config/queue.php, so the table
         // lands on the connection DatabaseFailedJobProvider reads it from
         $connection ??= function_exists('config') ? (string) config('queue', 'connection', 'default') : 'default';
         parent::__construct($connection);

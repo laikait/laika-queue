@@ -5,9 +5,7 @@ namespace Laika\Queue\Model;
 use Laika\Model\Model;
 
 /**
- * Model for the queue jobs table. Discovered by the Laika framework's
- * resource loader (see helpers/loader.php) so `php laika app:migrate` can
- * find its matching QueueModelSchema.
+ * Model for the queue jobs table. QueueModelSchema creates it.
  */
 class QueueModel extends Model
 {

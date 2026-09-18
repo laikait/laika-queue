@@ -4,6 +4,7 @@ namespace Laika\Queue\Driver;
 
 use Throwable;
 use Laika\Queue\Model\FailedJobModel;
+use Laika\Queue\Exceptions\DriverException;
 use Laika\Queue\Schema\FailedJobModelSchema;
 use Laika\Queue\Interfaces\FailedJobProviderInterface;
 
@@ -12,9 +13,9 @@ use Laika\Queue\Interfaces\FailedJobProviderInterface;
  * FailedJobModel. Register the connection with Laika\Model\Connection::add(...)
  * before constructing this.
  *
- * The table isn't created here — run `php laika app:migrate` (which
- * discovers Laika\Queue\Schema\FailedJobModelSchema via helpers/loader.php),
- * or call Schema::on($connection)->createIfNotExists(...) yourself before use.
+ * The table isn't created here. Create it once with
+ * (new FailedJobModelSchema($connection))->up(), which is safe to repeat.
+ * install() also creates it, but drops any existing table first.
  */
 class DatabaseFailedJobProvider implements FailedJobProviderInterface
 {

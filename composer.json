@@ -45,21 +45,6 @@
         "bin/worker"
     ],
     "minimum-stability": "stable",
-    "extra": {
-        "laika": {
-            "resources": {
-                "models": {
-                    "path": "src/Model",
-                    "namespace": "Laika\\Queue\\Model"
-                },
-                "schemas": {
-                    "path": "src/Schema",
-                    "namespace": "Laika\\Queue\\Schema",
-                    "contract": "Laika\\Model\\Contract\\SchemaAbstract"
-                }
-            }
-        }
-    },
     "config": {
         "allow-plugins": {
             "dealerdirect/phpcodesniffer-composer-installer": true

@@ -5,9 +5,7 @@ namespace Laika\Queue\Model;
 use Laika\Model\Model;
 
 /**
- * Model for the failed-jobs table. Discovered by the Laika framework's
- * resource loader (see helpers/loader.php) so `php laika app:migrate` can
- * find its matching FailedJobModelSchema.
+ * Model for the failed-jobs table. FailedJobModelSchema creates it.
  */
 class FailedJobModel extends Model
 {
